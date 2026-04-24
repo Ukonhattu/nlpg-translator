@@ -1,0 +1,23 @@
+{
+  "name": "nlp-translator-ts",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "nlp2py": "bin/nlp2py.mjs"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "lint": "eslint src --ext .ts || true"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2",
+    "express": "^4.19.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^20.0.0",
+    "@types/express": "^4.17.21"
+  }
+}
