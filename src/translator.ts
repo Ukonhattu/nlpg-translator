@@ -25,7 +25,7 @@ async function translateSingleBlock(
     "Use only basic Python (variables, arithmetic, if/else, for/while, print). " +
     "Use global variables rather than defining functions. " +
     "Do not invent missing logic; follow the instructions strictly. " +
-    "If something would require an undefined variable or unclear condition, you may add a Python comment describing the issue instead of guessing.";
+    "Never add comments or explanations; output only Python code.";
 
   const userContent =
     "Translate the following block into Python. " +
