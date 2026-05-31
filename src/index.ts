@@ -17,7 +17,10 @@ export type TranslationResult = {
 
 export type TranslateOptions = {
   aaltoApiKey: string;
+  aaltoEndpoint?: string;
   aaltoModel?: string;
+  enableLint?: boolean;
+  separateBlocks?: boolean;
 };
 
 import { lintProgram } from "./linter.js";
@@ -27,9 +30,11 @@ export async function translateProgram(
   blocks: Block[],
   options: TranslateOptions
 ): Promise<TranslationResult> {
-  const errors = lintProgram(blocks);
-  if (errors.length > 0) {
-    return { pythonCode: "", errors };
+  if (options.enableLint) {
+    const errors = lintProgram(blocks);
+    if (errors.length > 0) {
+      return { pythonCode: "", errors };
+    }
   }
   const pythonCode = await translateBlocks(blocks, options);
   return { pythonCode, errors: [] };

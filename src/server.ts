@@ -6,9 +6,12 @@ app.use(express.json());
 
 app.post("/translate", async (req: Request, res: Response) => {
   try {
-    const { blocks, model } = req.body as {
+    const { blocks, endpoint, model, enableLint, separateBlocks } = req.body as {
       blocks: Block[];
+      endpoint?: string;
       model?: string;
+      enableLint?: boolean;
+      separateBlocks?: boolean;
     };
 
     if (!Array.isArray(blocks) || blocks.length === 0) {
@@ -22,7 +25,10 @@ app.post("/translate", async (req: Request, res: Response) => {
 
     const result = await translateProgram(blocks, {
       aaltoApiKey: apiKey,
+      aaltoEndpoint: endpoint || process.env.AALTO_ENDPOINT,
       aaltoModel: model,
+      enableLint,
+      separateBlocks,
     });
 
     res.json(result);

@@ -5,6 +5,14 @@ export async function translateBlocks(
   blocks: Block[],
   options: TranslateOptions
 ): Promise<string> {
+  if (!options.separateBlocks) {
+    const combinedBlock: Block = {
+      id: blocks.map((block) => block.id).join(",") || "combined",
+      text: blocks.map((block) => block.text).join("\n\n"),
+    };
+    return (await translateSingleBlock(combinedBlock, options)).trim();
+  }
+
   const snippets: string[] = [];
   for (const block of blocks) {
     const code = await translateSingleBlock(block, options);
@@ -17,7 +25,11 @@ async function translateSingleBlock(
   block: Block,
   options: TranslateOptions
 ): Promise<string> {
-  const { aaltoApiKey, aaltoModel = "gpt-5-2025-08-07" } = options;
+  const {
+    aaltoApiKey,
+    aaltoEndpoint = "https://aalto-openai-apigw.azure-api.net/v1/openai/responses",
+    aaltoModel = "gpt-5-2025-08-07",
+  } = options;
 
   const systemPrompt =
     "You translate beginner-friendly natural language programming instructions into Python. " +
@@ -40,17 +52,14 @@ async function translateSingleBlock(
     ],
   };
 
-  const res = await fetch(
-    "https://aalto-openai-apigw.azure-api.net/v1/openai/responses",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Ocp-Apim-Subscription-Key": aaltoApiKey,
-      },
-      body: JSON.stringify(body),
-    }
-  );
+  const res = await fetch(aaltoEndpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Ocp-Apim-Subscription-Key": aaltoApiKey,
+    },
+    body: JSON.stringify(body),
+  });
 
   if (!res.ok) {
     const text = await res.text();
@@ -82,4 +91,3 @@ async function translateSingleBlock(
 
   return typeof fallback === "string" ? fallback : String(fallback ?? "");
 }
-

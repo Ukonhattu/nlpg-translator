@@ -4,13 +4,60 @@ import path from "path";
 import { translateProgram, type Block } from "./index.js";
 
 function usage() {
-  console.error("Usage: nlp2py <file>");
+  console.error(
+    "Usage: nlp2py <file> [--endpoint <url>] [--lint] [--separate-blocks]"
+  );
 }
 
 async function main() {
-  const filePath = process.argv[2];
+  const args = process.argv.slice(2);
+  let filePath: string | undefined;
+  let endpoint = process.env.AALTO_ENDPOINT;
+  let enableLint = false;
+  let separateBlocks = false;
+  let endpointFlagProvided = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
+    if (arg === "--endpoint") {
+      endpointFlagProvided = true;
+      if (!args[i + 1] || args[i + 1].startsWith("--")) {
+        console.error("Error: --endpoint requires a URL.");
+        process.exit(1);
+      }
+      endpoint = args[i + 1];
+      i++;
+      continue;
+    }
+
+    if (arg === "--lint") {
+      enableLint = true;
+      continue;
+    }
+
+    if (arg === "--separate-blocks") {
+      separateBlocks = true;
+      continue;
+    }
+
+    if (arg.startsWith("--")) {
+      console.error(`Error: unknown option ${arg}`);
+      usage();
+      process.exit(1);
+    }
+
+    if (!filePath) {
+      filePath = arg;
+    }
+  }
   if (!filePath) {
     usage();
+    process.exit(1);
+  }
+
+  if (endpointFlagProvided && !endpoint) {
+    console.error("Error: --endpoint requires a URL.");
     process.exit(1);
   }
 
@@ -33,6 +80,9 @@ async function main() {
 
   const result = await translateProgram(blocks, {
     aaltoApiKey: apiKey,
+    aaltoEndpoint: endpoint,
+    enableLint,
+    separateBlocks,
   });
 
   if (result.errors.length > 0) {
