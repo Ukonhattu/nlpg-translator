@@ -5,10 +5,11 @@
  * not to write Python. The code generator (codegen.ts) then turns the AST into
  * Python deterministically, so it can never add anything that is not in the AST.
  *
- * Every statement carries a `source` field: the exact snippet of the original
- * natural-language text it was derived from. This lets us verify, after the LLM
- * call, that each node is actually grounded in the source and drop the ones that
- * are not (hallucinations).
+ * To keep the model's output small (and therefore fast), the model cites the
+ * source by 1-based `line` number rather than copying the text verbatim. During
+ * verification we resolve that line number to the actual source text and store
+ * it in the `source` field for downstream use (codegen of "unknown" comments and
+ * the print-output check). Nodes whose line number is out of range are dropped.
  */
 
 export type Expr =
@@ -166,11 +167,7 @@ function validateStmtShape(node: any): boolean {
   if (!node || typeof node !== "object" || !STMT_KINDS.has(node.kind)) {
     return false;
   }
-  const hasSource =
-    node.kind === "unknown"
-      ? typeof node.source === "string"
-      : typeof node.source === "string" && node.source.trim().length > 0;
-  if (!hasSource) return false;
+  if (!Number.isInteger(node.line) || node.line < 1) return false;
 
   switch (node.kind) {
     case "assign":
@@ -209,12 +206,6 @@ function validateStmtShape(node: any): boolean {
   }
 }
 
-function sourceExists(citation: string, normalizedSource: string): boolean {
-  const c = normalize(citation);
-  if (!c) return false;
-  return normalizedSource.includes(c);
-}
-
 function citationHasOutputVerb(citation: string): boolean {
   const c = normalize(citation);
   return OUTPUT_VERBS.some((v) => new RegExp(`\\b${v}\\b`).test(c));
@@ -222,17 +213,17 @@ function citationHasOutputVerb(citation: string): boolean {
 
 /**
  * Recursively validates and fidelity-checks a list of statements against the
- * original source text. Nodes that fail validation or that are not grounded in
- * the source are dropped (per the project's "drop on no source basis" policy),
- * and a warning is recorded for each drop.
+ * original source lines. Each node cites a 1-based `line`; we resolve it to the
+ * actual source text (stored in `source`). Nodes that fail validation or cite a
+ * line outside the source are dropped (per the project's "drop on no source
+ * basis" policy), and a warning is recorded for each drop.
  */
 export function verifyStatements(
   nodes: any[],
-  sourceText: string,
+  sourceLines: string[],
   warnings: string[],
   path = "program"
 ): Stmt[] {
-  const normalizedSource = normalize(sourceText);
   const result: Stmt[] = [];
 
   nodes.forEach((node, index) => {
@@ -247,20 +238,22 @@ export function verifyStatements(
       return;
     }
 
-    // Fidelity: the cited source must actually appear in the input.
-    if (node.kind !== "unknown" && !sourceExists(node.source, normalizedSource)) {
+    // Fidelity: the cited line must exist in the input. Resolve it to the actual
+    // source text so codegen and the output check can use it.
+    if (node.line > sourceLines.length) {
       warnings.push(
-        `Dropped '${node.kind}' at ${where}: its cited source ` +
-          `(${JSON.stringify(node.source)}) is not present in the input.`
+        `Dropped '${node.kind}' at ${where}: cited line ${node.line} ` +
+          `is outside the input (${sourceLines.length} lines).`
       );
       return;
     }
+    node.source = sourceLines[node.line - 1];
 
     // Fidelity: a print must be attributed to a line that actually asks for
     // output, otherwise the model invented it.
     if (node.kind === "print" && !citationHasOutputVerb(node.source)) {
       warnings.push(
-        `Dropped 'print' at ${where}: cited source ` +
+        `Dropped 'print' at ${where}: cited line ${node.line} ` +
           `(${JSON.stringify(node.source)}) does not request any output.`
       );
       return;
@@ -269,13 +262,13 @@ export function verifyStatements(
     if (node.kind === "if") {
       node.body = verifyStatements(
         node.body,
-        sourceText,
+        sourceLines,
         warnings,
         `${where}.body`
       );
       node.orelse = verifyStatements(
         node.orelse,
-        sourceText,
+        sourceLines,
         warnings,
         `${where}.orelse`
       );
@@ -286,7 +279,7 @@ export function verifyStatements(
     ) {
       node.body = verifyStatements(
         node.body,
-        sourceText,
+        sourceLines,
         warnings,
         `${where}.body`
       );
@@ -308,6 +301,7 @@ export function verifyProgram(raw: any, sourceText: string): VerifyResult {
     warnings.push("Model did not return a valid program object.");
     return { statements: [], warnings };
   }
-  const statements = verifyStatements(raw.statements, sourceText, warnings);
+  const sourceLines = sourceText.split(/\r?\n/);
+  const statements = verifyStatements(raw.statements, sourceLines, warnings);
   return { statements, warnings };
 }

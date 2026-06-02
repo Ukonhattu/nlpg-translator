@@ -6,15 +6,25 @@ app.use(express.json());
 
 app.post("/translate", async (req: Request, res: Response) => {
   try {
-    const { blocks, endpoint, model, enableLint, separateBlocks, astMode } =
-      req.body as {
-        blocks: Block[];
-        endpoint?: string;
-        model?: string;
-        enableLint?: boolean;
-        separateBlocks?: boolean;
-        astMode?: boolean;
-      };
+    const {
+      blocks,
+      endpoint,
+      model,
+      enableLint,
+      separateBlocks,
+      astMode,
+      unsupportedBehavior,
+      reasoningEffort,
+    } = req.body as {
+      blocks: Block[];
+      endpoint?: string;
+      model?: string;
+      enableLint?: boolean;
+      separateBlocks?: boolean;
+      astMode?: boolean;
+      unsupportedBehavior?: "comment" | "fallback";
+      reasoningEffort?: "minimal" | "low" | "medium" | "high";
+    };
 
     if (!Array.isArray(blocks) || blocks.length === 0) {
       return res.status(400).json({ error: "blocks must be a non-empty array" });
@@ -32,6 +42,8 @@ app.post("/translate", async (req: Request, res: Response) => {
       enableLint,
       separateBlocks,
       astMode,
+      unsupportedBehavior,
+      reasoningEffort,
     });
 
     res.json(result);

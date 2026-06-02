@@ -5,7 +5,7 @@ import { translateProgram, type Block } from "./index.js";
 
 function usage() {
   console.error(
-    "Usage: nlp2py <file> [--endpoint <url>] [--lint] [--separate-blocks] [--ast]"
+    "Usage: nlp2py <file> [--endpoint <url>] [--lint] [--separate-blocks] [--ast] [--unsupported <comment|fallback>] [--reasoning <minimal|low|medium|high>]"
   );
 }
 
@@ -16,6 +16,8 @@ async function main() {
   let enableLint = false;
   let separateBlocks = false;
   let astMode = false;
+  let unsupportedBehavior: "comment" | "fallback" = "comment";
+  let reasoningEffort: "minimal" | "low" | "medium" | "high" | undefined;
   let endpointFlagProvided = false;
 
   for (let i = 0; i < args.length; i++) {
@@ -44,6 +46,37 @@ async function main() {
 
     if (arg === "--ast") {
       astMode = true;
+      continue;
+    }
+
+    if (arg === "--unsupported") {
+      const value = args[i + 1];
+      if (value !== "comment" && value !== "fallback") {
+        console.error(
+          "Error: --unsupported requires a value of 'comment' or 'fallback'."
+        );
+        process.exit(1);
+      }
+      unsupportedBehavior = value;
+      i++;
+      continue;
+    }
+
+    if (arg === "--reasoning") {
+      const value = args[i + 1];
+      if (
+        value !== "minimal" &&
+        value !== "low" &&
+        value !== "medium" &&
+        value !== "high"
+      ) {
+        console.error(
+          "Error: --reasoning requires one of 'minimal', 'low', 'medium', 'high'."
+        );
+        process.exit(1);
+      }
+      reasoningEffort = value;
+      i++;
       continue;
     }
 
@@ -90,6 +123,8 @@ async function main() {
     enableLint,
     separateBlocks,
     astMode,
+    unsupportedBehavior,
+    reasoningEffort,
   });
 
   if (result.errors.length > 0) {

@@ -1,6 +1,6 @@
 import fetch from "node-fetch";
 import type { Block, TranslateOptions } from "./index.js";
-import { verifyProgram } from "./ast.js";
+import { verifyProgram, type Stmt } from "./ast.js";
 import { generatePython } from "./codegen.js";
 
 export async function translateBlocks(
@@ -47,14 +47,20 @@ async function translateSingleBlock(
     "Add nothing that is not explicitly stated in the instructions.\n\n" +
     block.text;
 
-  const rawText = await callAaltoResponses(systemPrompt, userContent, options);
+  const rawText = await callAaltoResponses(
+    systemPrompt,
+    userContent,
+    options,
+    options.reasoningEffort
+  );
   return enforceFidelity(rawText, block.text);
 }
 
 async function callAaltoResponses(
   systemPrompt: string,
   userContent: string,
-  options: TranslateOptions
+  options: TranslateOptions,
+  reasoningEffort?: TranslateOptions["reasoningEffort"]
 ): Promise<string> {
   const {
     aaltoApiKey,
@@ -62,13 +68,17 @@ async function callAaltoResponses(
     aaltoModel = "gpt-5-2025-08-07",
   } = options;
 
-  const body = {
+  const body: Record<string, unknown> = {
     model: aaltoModel,
     input: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userContent },
     ],
   };
+
+  if (reasoningEffort) {
+    body.reasoning = { effort: reasoningEffort };
+  }
 
   const res = await fetch(aaltoEndpoint, {
     method: "POST",
@@ -216,15 +226,16 @@ const AST_SYSTEM_PROMPT = `You are a parser. Convert beginner-friendly natural l
 Output ONLY a single JSON object, no prose, no markdown fences. Shape:
 { "statements": Stmt[] }
 
-Statement nodes (each MUST include "source": the exact snippet of the input it came from):
-- { "kind": "assign", "target": string, "value": Expr, "source": string }            // "Let the score be 0"
-- { "kind": "augassign", "target": string, "op": "+"|"-"|"*"|"/", "value": Expr, "source": string } // "Add 10 to the score"
-- { "kind": "print", "value": Expr, "source": string }                                  // only when output is explicitly requested
-- { "kind": "if", "test": Expr, "body": Stmt[], "orelse": Stmt[], "source": string }
-- { "kind": "while", "test": Expr, "body": Stmt[], "source": string }
-- { "kind": "repeat", "count": Expr, "body": Stmt[], "source": string }                 // "Repeat 3 times" (no loop variable)
-- { "kind": "for", "loopVar": string, "start": Expr, "stop": Expr, "step"?: Expr, "body": Stmt[], "source": string } // "For each i from 1 to 5"; renders as range(start, stop[, step]); stop is EXCLUSIVE
-- { "kind": "unknown", "source": string, "note"?: string }                              // construct you cannot represent
+The input is given as numbered lines. Each statement node MUST include "line": the 1-based number of the input line it came from (an integer). Do NOT copy the source text.
+Statement nodes:
+- { "kind": "assign", "target": string, "value": Expr, "line": number }            // "Let the score be 0"
+- { "kind": "augassign", "target": string, "op": "+"|"-"|"*"|"/", "value": Expr, "line": number } // "Add 10 to the score"
+- { "kind": "print", "value": Expr, "line": number }                                  // only when output is explicitly requested
+- { "kind": "if", "test": Expr, "body": Stmt[], "orelse": Stmt[], "line": number }
+- { "kind": "while", "test": Expr, "body": Stmt[], "line": number }
+- { "kind": "repeat", "count": Expr, "body": Stmt[], "line": number }                 // "Repeat 3 times" (no loop variable)
+- { "kind": "for", "loopVar": string, "start": Expr, "stop": Expr, "step"?: Expr, "body": Stmt[], "line": number } // "For each i from 1 to 5"; renders as range(start, stop[, step]); stop is EXCLUSIVE
+- { "kind": "unknown", "line": number, "note"?: string }                              // construct you cannot represent
 
 Expression nodes:
 - { "kind": "num", "value": number }
@@ -244,7 +255,7 @@ STRICT TRANSCRIPTION RULES:
 - Do NOT invent default values, helper steps, example usage, or extra output.
 - If the instructions are vague, incomplete, or wrong, faithfully produce a vague/incomplete/wrong AST. Do not repair it.
 - If you cannot represent a construct, emit an "unknown" node instead of guessing.
-- Every node's "source" must be copied verbatim from the input.`;
+- Every node's "line" must be the correct 1-based number of the input line it represents.`;
 
 export async function translateBlocksViaAst(
   blocks: Block[],
@@ -273,15 +284,21 @@ async function translateSingleBlockViaAst(
   block: Block,
   options: TranslateOptions
 ): Promise<AstTranslationResult> {
+  const numberedSource = block.text
+    .split(/\r?\n/)
+    .map((line, index) => `${index + 1}: ${line}`)
+    .join("\n");
+
   const userContent =
-    "Convert the following instructions into the JSON AST described above. " +
-    "Output only the JSON object.\n\n" +
-    block.text;
+    "Convert the following numbered instructions into the JSON AST described above. " +
+    "Cite each node's origin with its line number. Output only the JSON object.\n\n" +
+    numberedSource;
 
   const rawText = await callAaltoResponses(
     AST_SYSTEM_PROMPT,
     userContent,
-    options
+    options,
+    options.reasoningEffort ?? "low"
   );
 
   let parsed: any;
@@ -297,7 +314,38 @@ async function translateSingleBlockViaAst(
   }
 
   const { statements, warnings } = verifyProgram(parsed, block.text);
+
+  // When configured to fall back, hand any block containing constructs the AST
+  // cannot represent to the direct (best-effort) translation mode instead of
+  // emitting `# unsupported:` comments.
+  if (options.unsupportedBehavior === "fallback" && hasUnknown(statements)) {
+    const pythonCode = await translateSingleBlock(block, options);
+    return {
+      pythonCode,
+      warnings: [
+        ...warnings,
+        "Block contained unsupported construct(s); fell back to direct best-effort translation.",
+      ],
+    };
+  }
+
   return { pythonCode: generatePython(statements), warnings };
+}
+
+function hasUnknown(statements: Stmt[]): boolean {
+  for (const stmt of statements) {
+    if (stmt.kind === "unknown") return true;
+    if (stmt.kind === "if") {
+      if (hasUnknown(stmt.body) || hasUnknown(stmt.orelse)) return true;
+    } else if (
+      stmt.kind === "while" ||
+      stmt.kind === "repeat" ||
+      stmt.kind === "for"
+    ) {
+      if (hasUnknown(stmt.body)) return true;
+    }
+  }
+  return false;
 }
 
 /**

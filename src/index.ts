@@ -33,6 +33,22 @@ export type TranslateOptions = {
    * model writes Python directly).
    */
   astMode?: boolean;
+  /**
+   * In astMode, controls what happens for source constructs the AST cannot
+   * represent (which the model marks as "unknown" nodes):
+   *  - "comment"  (default): render them as `# unsupported: ...` comments so the
+   *    output stays faithful but visibly incomplete.
+   *  - "fallback": for any block containing such constructs, fall back to the
+   *    direct (non-AST) translation mode as a best-effort attempt.
+   */
+  unsupportedBehavior?: "comment" | "fallback";
+  /**
+   * Reasoning effort for reasoning-capable models (e.g. gpt-5). Lower effort
+   * means far fewer hidden reasoning tokens and therefore much lower latency.
+   * Left undefined for the direct mode (model default); the AST path defaults
+   * to "low" since transcribing instructions into an AST is largely mechanical.
+   */
+  reasoningEffort?: "minimal" | "low" | "medium" | "high";
 };
 
 import { lintProgram } from "./linter.js";
