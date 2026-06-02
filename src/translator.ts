@@ -39,7 +39,10 @@ async function translateSingleBlock(
     "show, display, or output something. Do not add prints to show results, to debug, or to be helpful.\n" +
     "- Do not add example usage, test code, default values, or extra output.\n" +
     "- Produce code for each given step only; do not introduce steps that are not there.\n" +
-    "- Output only raw Python code: no comments, no explanations, no markdown code fences.";
+    "- Output only raw Python code: no comments, no explanations, no markdown code fences.\n" +
+    "STYLE RULES:\n" +
+    "- Do not use augmented assignment operators (+=, -=, *=, /=, %=). Always write " +
+    "the assignment out in full, e.g. use `a = a + value` instead of `a += value`.";
 
   const userContent =
     "Translate the following block into Python. " +
