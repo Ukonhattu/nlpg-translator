@@ -13,6 +13,11 @@ export type LintError = {
 export type TranslationResult = {
   pythonCode: string;
   errors: LintError[];
+  /**
+   * Non-fatal notices, e.g. AST nodes dropped because they were not grounded in
+   * the source (only populated when astMode is enabled).
+   */
+  warnings?: string[];
 };
 
 export type TranslateOptions = {
@@ -21,10 +26,17 @@ export type TranslateOptions = {
   aaltoModel?: string;
   enableLint?: boolean;
   separateBlocks?: boolean;
+  /**
+   * When true, the model transcribes the instructions into an AST which is then
+   * deterministically rendered to Python. This guarantees the generated code
+   * contains nothing that is not present in the source. Defaults to false (the
+   * model writes Python directly).
+   */
+  astMode?: boolean;
 };
 
 import { lintProgram } from "./linter.js";
-import { translateBlocks } from "./translator.js";
+import { translateBlocks, translateBlocksViaAst } from "./translator.js";
 
 export async function translateProgram(
   blocks: Block[],
@@ -36,6 +48,15 @@ export async function translateProgram(
       return { pythonCode: "", errors };
     }
   }
+
+  if (options.astMode) {
+    const { pythonCode, warnings } = await translateBlocksViaAst(
+      blocks,
+      options
+    );
+    return { pythonCode, errors: [], warnings };
+  }
+
   const pythonCode = await translateBlocks(blocks, options);
   return { pythonCode, errors: [] };
 }

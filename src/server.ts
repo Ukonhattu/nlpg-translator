@@ -6,13 +6,15 @@ app.use(express.json());
 
 app.post("/translate", async (req: Request, res: Response) => {
   try {
-    const { blocks, endpoint, model, enableLint, separateBlocks } = req.body as {
-      blocks: Block[];
-      endpoint?: string;
-      model?: string;
-      enableLint?: boolean;
-      separateBlocks?: boolean;
-    };
+    const { blocks, endpoint, model, enableLint, separateBlocks, astMode } =
+      req.body as {
+        blocks: Block[];
+        endpoint?: string;
+        model?: string;
+        enableLint?: boolean;
+        separateBlocks?: boolean;
+        astMode?: boolean;
+      };
 
     if (!Array.isArray(blocks) || blocks.length === 0) {
       return res.status(400).json({ error: "blocks must be a non-empty array" });
@@ -29,6 +31,7 @@ app.post("/translate", async (req: Request, res: Response) => {
       aaltoModel: model,
       enableLint,
       separateBlocks,
+      astMode,
     });
 
     res.json(result);

@@ -5,7 +5,7 @@ import { translateProgram, type Block } from "./index.js";
 
 function usage() {
   console.error(
-    "Usage: nlp2py <file> [--endpoint <url>] [--lint] [--separate-blocks]"
+    "Usage: nlp2py <file> [--endpoint <url>] [--lint] [--separate-blocks] [--ast]"
   );
 }
 
@@ -15,6 +15,7 @@ async function main() {
   let endpoint = process.env.AALTO_ENDPOINT;
   let enableLint = false;
   let separateBlocks = false;
+  let astMode = false;
   let endpointFlagProvided = false;
 
   for (let i = 0; i < args.length; i++) {
@@ -38,6 +39,11 @@ async function main() {
 
     if (arg === "--separate-blocks") {
       separateBlocks = true;
+      continue;
+    }
+
+    if (arg === "--ast") {
+      astMode = true;
       continue;
     }
 
@@ -83,6 +89,7 @@ async function main() {
     aaltoEndpoint: endpoint,
     enableLint,
     separateBlocks,
+    astMode,
   });
 
   if (result.errors.length > 0) {
@@ -91,6 +98,12 @@ async function main() {
       console.error(`[${e.blockId}${loc}] ${e.code}: ${e.message}`);
     }
     process.exit(1);
+  }
+
+  if (result.warnings && result.warnings.length > 0) {
+    for (const w of result.warnings) {
+      console.error(`warning: ${w}`);
+    }
   }
 
   process.stdout.write(result.pythonCode + "\n");
