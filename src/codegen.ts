@@ -59,6 +59,8 @@ export function emitExpr(expr: Expr): string {
       return expr.values.map(emitOperand).join(` ${expr.op} `);
     case "not":
       return `not ${emitOperand(expr.value)}`;
+    case "index":
+      return `${emitOperand(expr.target)}[${emitExpr(expr.index)}]`;
     case "input": {
       const promptCode = expr.prompt ? emitExpr(expr.prompt) : "";
       const call = `input(${promptCode})`;

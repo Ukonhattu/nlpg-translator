@@ -235,6 +235,7 @@ Expression nodes:
 - { "kind": "compare", "op": ">"|"<"|">="|"<="|"=="|"!=", "left": Expr, "right": Expr }
 - { "kind": "boolop", "op": "and"|"or", "values": Expr[] }
 - { "kind": "not", "value": Expr }
+- { "kind": "index", "target": Expr, "index": Expr }   // subscript: target[index]. "first character of name" -> index 0; "last character" -> index -1
 - { "kind": "input", "prompt"?: Expr, "cast"?: "int"|"float" }
 
 STRICT TRANSCRIPTION RULES:

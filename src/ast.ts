@@ -25,6 +25,7 @@ export type Expr =
     }
   | { kind: "boolop"; op: "and" | "or"; values: Expr[] }
   | { kind: "not"; value: Expr }
+  | { kind: "index"; target: Expr; index: Expr }
   | { kind: "input"; prompt?: Expr; cast?: "int" | "float" };
 
 export type Stmt =
@@ -68,6 +69,7 @@ const EXPR_KINDS = new Set([
   "compare",
   "boolop",
   "not",
+  "index",
   "input",
 ]);
 
@@ -141,6 +143,8 @@ function isExpr(node: any): node is Expr {
       );
     case "not":
       return isExpr(node.value);
+    case "index":
+      return isExpr(node.target) && isExpr(node.index);
     case "input":
       return (
         (node.prompt === undefined || isExpr(node.prompt)) &&
