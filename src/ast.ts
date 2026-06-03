@@ -1,3 +1,5 @@
+import { lineRequestsOutput } from "./outputVerbs.js";
+
 /**
  * Intermediate representation (AST) for the natural-language -> Python pipeline.
  *
@@ -89,32 +91,10 @@ const COMPARE_OPS = new Set([">", "<", ">=", "<=", "==", "!="]);
 const BINOPS = new Set(["+", "-", "*", "/", "%"]);
 const AUG_OPS = new Set(["+", "-", "*", "/"]);
 
-/**
- * Verbs that signal an explicit request to produce output. Used only to verify
- * the LLM's own attribution of `print` nodes; it does NOT constrain the input
- * phrasing (any source line may use any of these words).
- */
-const OUTPUT_VERBS = [
-  "print",
-  "show",
-  "display",
-  "output",
-  "say",
-  "tell",
-  "report",
-  "log",
-  "announce",
-  "list",
-];
-
 export type VerifyResult = {
   statements: Stmt[];
   warnings: string[];
 };
-
-function normalize(text: string): string {
-  return text.toLowerCase().replace(/\s+/g, " ").trim();
-}
 
 function isExpr(node: any): node is Expr {
   if (!node || typeof node !== "object" || !EXPR_KINDS.has(node.kind)) {
@@ -206,11 +186,6 @@ function validateStmtShape(node: any): boolean {
   }
 }
 
-function citationHasOutputVerb(citation: string): boolean {
-  const c = normalize(citation);
-  return OUTPUT_VERBS.some((v) => new RegExp(`\\b${v}\\b`).test(c));
-}
-
 /**
  * Recursively validates and fidelity-checks a list of statements against the
  * original source lines. Each node cites a 1-based `line`; we resolve it to the
@@ -251,7 +226,7 @@ export function verifyStatements(
 
     // Fidelity: a print must be attributed to a line that actually asks for
     // output, otherwise the model invented it.
-    if (node.kind === "print" && !citationHasOutputVerb(node.source)) {
+    if (node.kind === "print" && !lineRequestsOutput(node.source)) {
       warnings.push(
         `Dropped 'print' at ${where}: cited line ${node.line} ` +
           `(${JSON.stringify(node.source)}) does not request any output.`

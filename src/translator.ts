@@ -2,6 +2,7 @@ import fetch from "node-fetch";
 import type { Block, TranslateOptions } from "./index.js";
 import { verifyProgram, type Stmt } from "./ast.js";
 import { generatePython } from "./codegen.js";
+import { countRequestedPrints } from "./outputVerbs.js";
 
 export async function translateBlocks(
   blocks: Block[],
@@ -36,7 +37,7 @@ async function translateSingleBlock(
     "- Translate ONLY what is explicitly written. Never add, infer, or invent logic, " +
     "variables, or statements that are not directly stated in the instructions.\n" +
     "- Never add a print/output statement unless the instruction explicitly asks to print, " +
-    "show, display, or output something. Do not add prints to show results, to debug, or to be helpful.\n" +
+    "show, display, output, tulosta, näytä, or kirjoita something. Do not add prints to show results, to debug, or to be helpful.\n" +
     "- Do not add example usage, test code, default values, or extra output.\n" +
     "- Produce code for each given step only; do not introduce steps that are not there.\n" +
     "- Output only raw Python code: no comments, no explanations, no markdown code fences.\n" +
@@ -149,17 +150,6 @@ function stripCodeFences(text: string): string {
     .trim();
 }
 
-/**
- * Counts how many output statements the source explicitly requests. Only an
- * explicit print/show/display/output verb counts; anything else is treated as
- * "not requested" so the model cannot smuggle in extra prints.
- */
-function countRequestedPrints(sourceText: string): number {
-  return sourceText
-    .split(/\r?\n/)
-    .filter((line) => /\b(print|display|show|output)\b/i.test(line)).length;
-}
-
 function indentWidth(line: string): number {
   return line.match(/^\s*/)?.[0].length ?? 0;
 }
@@ -254,7 +244,7 @@ Expression nodes:
 
 STRICT TRANSCRIPTION RULES:
 - Represent ONLY what the text literally says. Never add, infer, complete, or "fix" anything.
-- Do NOT add print/output unless the text explicitly asks to print/show/display/output.
+- Do NOT add print/output unless the text explicitly asks to print/show/display/output or tulosta/näytä/kirjoita (Finnish).
 - Do NOT invent default values, helper steps, example usage, or extra output.
 - If the instructions are vague, incomplete, or wrong, faithfully produce a vague/incomplete/wrong AST. Do not repair it.
 - If you cannot represent a construct, emit an "unknown" node instead of guessing.
