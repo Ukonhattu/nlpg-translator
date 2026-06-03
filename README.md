@@ -140,12 +140,25 @@ Lint rules are narrower than AST mode capabilities (English-centric v0).
 
 ```bash
 npm run lint      # ESLint
-npm test          # Vitest (no API key required)
+npm test          # Unit tests (no API key)
 npm run test:watch
 npm run build
 ```
 
-Tests cover AST verification, codegen, output-verb heuristics, fidelity helpers, and the NL linter without calling the live API.
+Unit tests cover AST verification, codegen (including complex constructs), golden AST fixtures, output-verb heuristics, fidelity helpers, and the NL linter without calling the live API.
+
+Golden fixtures live in `tests/fixtures/golden/`; integration scenarios in `tests/integration/cases.ts` and `examples/integration/`.
+
+### Integration tests (live API)
+
+Calls the real Aalto endpoint. Requires `AALTO_API_KEY` (optional: `AALTO_ENDPOINT`).
+
+```bash
+export AALTO_API_KEY=your-key
+npm run test:integration
+```
+
+Skipped automatically when the key is unset (CI unit job stays green). A separate GitHub Actions job runs integration tests when the `AALTO_API_KEY` repository secret is configured.
 
 ## Docker
 

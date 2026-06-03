@@ -47,6 +47,61 @@ describe("verifyProgram", () => {
     expect(diagnostics.some((d) => d.includes("Skipped invalid"))).toBe(true);
   });
 
+  it("rejects assign with both target and targetExpr", () => {
+    const { statements } = verifyProgram(
+      {
+        statements: [
+          {
+            kind: "assign",
+            target: "x",
+            targetExpr: { kind: "var", name: "y" },
+            value: { kind: "num", value: 1 },
+            line: 1,
+          },
+        ],
+      },
+      source,
+      { collectDiagnostics: true }
+    );
+    expect(statements).toHaveLength(0);
+  });
+
+  it("rejects boolop with a single value", () => {
+    const { statements } = verifyProgram(
+      {
+        statements: [
+          {
+            kind: "print",
+            value: {
+              kind: "boolop",
+              op: "and",
+              values: [{ kind: "bool", value: true }],
+            },
+            line: 2,
+          },
+        ],
+      },
+      source
+    );
+    expect(statements).toHaveLength(0);
+  });
+
+  it("rejects empty f-string parts", () => {
+    const { statements } = verifyProgram(
+      {
+        statements: [
+          {
+            kind: "print",
+            value: { kind: "fstring", parts: [] },
+            line: 2,
+          },
+        ],
+      },
+      source
+    );
+    expect(statements).toHaveLength(0);
+  });
+
   it("keeps print without output verb by default but records diagnostic", () => {
     const text = "Let the score be 0.\nUpdate the total.";
     const { statements, diagnostics } = verifyProgram(
@@ -100,6 +155,41 @@ describe("verifyProgram", () => {
     expect(statements.some((s) => s.kind === "print")).toBe(false);
     expect(diagnostics.some((d) => d.includes("omitted print"))).toBe(true);
   });
+
+  it("verifies nested try handler bodies", () => {
+    const text = "Try something.\nOn error, print msg.";
+    const { statements, diagnostics } = verifyProgram(
+      {
+        statements: [
+          {
+            kind: "try",
+            body: [],
+            handlers: [
+              {
+                exc: "ValueError",
+                body: [
+                  {
+                    kind: "print",
+                    value: { kind: "str", value: "msg" },
+                    line: 2,
+                  },
+                ],
+              },
+            ],
+            line: 1,
+          },
+        ],
+      },
+      text
+    );
+    expect(diagnostics).toEqual([]);
+    expect(statements).toHaveLength(1);
+    const tryStmt = statements[0];
+    expect(tryStmt.kind).toBe("try");
+    if (tryStmt.kind === "try") {
+      expect(tryStmt.handlers[0].body[0].source).toBe("On error, print msg.");
+    }
+  });
 });
 
 describe("statementsContainUnknown", () => {
@@ -120,6 +210,29 @@ describe("statementsContainUnknown", () => {
       },
     ];
 
+    expect(statementsContainUnknown(stmts)).toBe(true);
+  });
+
+  it("finds unknown inside functiondef and try handler bodies", () => {
+    const stmts: Stmt[] = [
+      {
+        kind: "functiondef",
+        name: "f",
+        params: [],
+        body: [{ kind: "unknown", source: "magic", note: "" }],
+        source: "",
+      },
+      {
+        kind: "try",
+        body: [],
+        handlers: [
+          {
+            body: [{ kind: "unknown", source: "other", note: "" }],
+          },
+        ],
+        source: "",
+      },
+    ];
     expect(statementsContainUnknown(stmts)).toBe(true);
   });
 });

@@ -1,0 +1,52 @@
+{
+  "source": "Let the total be 0.\nLet the numbers be a list with 1, 2, 3.\nFor each number in the numbers:\n  Add number to the total.\nPrint the total.",
+  "raw": {
+    "statements": [
+      {
+        "kind": "assign",
+        "target": "total",
+        "value": { "kind": "num", "value": 0 },
+        "line": 1
+      },
+      {
+        "kind": "assign",
+        "target": "numbers",
+        "value": {
+          "kind": "list",
+          "items": [
+            { "kind": "num", "value": 1 },
+            { "kind": "num", "value": 2 },
+            { "kind": "num", "value": 3 }
+          ]
+        },
+        "line": 2
+      },
+      {
+        "kind": "forin",
+        "loopVar": "number",
+        "iterable": { "kind": "var", "name": "numbers" },
+        "body": [
+          {
+            "kind": "augassign",
+            "target": "total",
+            "op": "+",
+            "value": { "kind": "var", "name": "number" },
+            "line": 4
+          }
+        ],
+        "line": 3
+      },
+      {
+        "kind": "print",
+        "value": { "kind": "var", "name": "total" },
+        "line": 5
+      }
+    ]
+  },
+  "pythonPatterns": [
+    "numbers = \\[1, 2, 3\\]",
+    "for number in numbers:",
+    "total = total \\+ number",
+    "print\\(total\\)"
+  ]
+}

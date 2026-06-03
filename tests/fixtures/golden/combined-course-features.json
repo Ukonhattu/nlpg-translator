@@ -1,0 +1,109 @@
+{
+  "description": "Multi-construct program grounded to numbered source lines",
+  "source": "Let the total be 0.\nDefine a function add_one that takes value.\nReturn value plus 1.\nLet the total be add_one applied to the total.\nIf the total is greater than 1, print the total.\nOtherwise, print zero.\nTry to divide 1 by the total.\nIf a ZeroDivisionError happens, print \"error\".",
+  "raw": {
+    "statements": [
+      {
+        "kind": "assign",
+        "target": "total",
+        "value": { "kind": "num", "value": 0 },
+        "line": 1
+      },
+      {
+        "kind": "functiondef",
+        "name": "add_one",
+        "params": ["value"],
+        "docstring": "Add one",
+        "body": [
+          {
+            "kind": "return",
+            "values": [
+              {
+                "kind": "binop",
+                "op": "+",
+                "left": { "kind": "var", "name": "value" },
+                "right": { "kind": "num", "value": 1 }
+              }
+            ],
+            "line": 3
+          }
+        ],
+        "line": 2
+      },
+      {
+        "kind": "assign",
+        "target": "total",
+        "value": {
+          "kind": "call",
+          "func": "add_one",
+          "args": [{ "kind": "var", "name": "total" }]
+        },
+        "line": 4
+      },
+      {
+        "kind": "if",
+        "test": {
+          "kind": "compare",
+          "op": ">",
+          "left": { "kind": "var", "name": "total" },
+          "right": { "kind": "num", "value": 1 }
+        },
+        "body": [
+          {
+            "kind": "print",
+            "value": { "kind": "var", "name": "total" },
+            "line": 5
+          }
+        ],
+        "elifs": [],
+        "orelse": [
+          {
+            "kind": "print",
+            "value": { "kind": "num", "value": 0 },
+            "line": 6
+          }
+        ],
+        "line": 5
+      },
+      {
+        "kind": "try",
+        "body": [
+          {
+            "kind": "assign",
+            "target": "ratio",
+            "value": {
+              "kind": "binop",
+              "op": "/",
+              "left": { "kind": "num", "value": 1 },
+              "right": { "kind": "var", "name": "total" }
+            },
+            "line": 7
+          }
+        ],
+        "handlers": [
+          {
+            "exc": "ZeroDivisionError",
+            "body": [
+              {
+                "kind": "print",
+                "value": { "kind": "str", "value": "error" },
+                "line": 8
+              }
+            ]
+          }
+        ],
+        "line": 7
+      }
+    ]
+  },
+  "pythonPatterns": [
+    "def add_one",
+    "return value \\+ 1",
+    "add_one\\(total\\)",
+    "if total > 1:",
+    "else:",
+    "try:",
+    "except ZeroDivisionError:",
+    "print\\("
+  ]
+}
