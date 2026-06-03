@@ -1,6 +1,9 @@
 import fetch from "node-fetch";
 import type { Block, TranslateOptions } from "./index.js";
-import { verifyProgram, type Stmt } from "./ast.js";
+import {
+  statementsContainUnknown,
+  verifyProgram,
+} from "./ast.js";
 import { generatePython } from "./codegen.js";
 import { countRequestedPrints } from "./outputVerbs.js";
 
@@ -214,41 +217,54 @@ export type AstTranslationResult = {
   warnings: string[];
 };
 
-const AST_SYSTEM_PROMPT = `You are a parser. Convert beginner-friendly natural language programming instructions into a JSON Abstract Syntax Tree (AST). You DO NOT write Python and you DO NOT execute logic.
+const AST_SYSTEM_PROMPT = `You are a parser. Convert beginner-friendly natural language programming instructions into a JSON Abstract Syntax Tree (AST). You DO NOT write Python. Map English and Finnish course phrasing to the same AST.
 
-Output ONLY a single JSON object, no prose, no markdown fences. Shape:
-{ "statements": Stmt[] }
+Output ONLY a single JSON object: { "statements": Stmt[] }
 
-The input is given as numbered lines. Each statement node MUST include "line": the 1-based number of the input line it came from (an integer). Do NOT copy the source text.
+Numbered input: every Stmt MUST include "line" (1-based source line). Do NOT copy source text into nodes.
+
 Statement nodes:
-- { "kind": "assign", "target": string, "value": Expr, "line": number }            // "Let the score be 0"
-- { "kind": "augassign", "target": string, "op": "+"|"-"|"*"|"/", "value": Expr, "line": number } // "Add 10 to the score"
-- { "kind": "print", "value": Expr, "line": number }                                  // only when output is explicitly requested
-- { "kind": "if", "test": Expr, "body": Stmt[], "orelse": Stmt[], "line": number }
-- { "kind": "while", "test": Expr, "body": Stmt[], "line": number }
-- { "kind": "repeat", "count": Expr, "body": Stmt[], "line": number }                 // "Repeat 3 times" (no loop variable)
-- { "kind": "for", "loopVar": string, "start": Expr, "stop": Expr, "step"?: Expr, "body": Stmt[], "line": number } // "For each i from 1 to 5"; renders as range(start, stop[, step]); stop is EXCLUSIVE
-- { "kind": "unknown", "line": number, "note"?: string }                              // construct you cannot represent
+- assign: { "kind":"assign", "target"?: string, "targetExpr"?: Expr, "value": Expr, "line": n }  // variable assignment OR subscript assign (use targetExpr for list[i])
+- unpackassign: { "kind":"unpackassign", "targets": string[], "value": Expr, "line": n }  // multiple names from one value / tuple unpack
+- augassign: { "kind":"augassign", "target": string, "op":"+"|"-"|"*"|"/", "value": Expr, "line": n }
+- print: { "kind":"print", "value": Expr, "line": n }  // ONLY when output is explicitly requested (print/tulosta/näytä/kirjoita/…)
+- if: { "kind":"if", "test": Expr, "body": Stmt[], "elifs"?: [{"test":Expr,"body":Stmt[]}], "orelse": Stmt[], "line": n }  // elif/else chains
+- while: { "kind":"while", "test": Expr, "body": Stmt[], "line": n }  // includes while True
+- repeat: { "kind":"repeat", "count": Expr, "body": Stmt[], "line": n }  // fixed-count loop without index variable
+- for: { "kind":"for", "loopVar": string, "start": Expr, "stop": Expr, "step"?: Expr, "body": Stmt[], "line": n }  // numeric range; stop is EXCLUSIVE (Python range)
+- forin: { "kind":"forin", "loopVar": string, "iterable": Expr, "body": Stmt[], "line": n }  // for each item in a list
+- break: { "kind":"break", "line": n }
+- append: { "kind":"append", "target": string, "value": Expr, "line": n }  // add to end of list
+- functiondef: { "kind":"functiondef", "name": string, "params": string[], "body": Stmt[], "docstring"?: string, "line": n }
+- return: { "kind":"return", "values": Expr[], "line": n }  // empty values [] for bare return; multiple values for tuple return
+- assert: { "kind":"assert", "test": Expr, "message"?: Expr, "line": n }
+- raise: { "kind":"raise", "excType": string, "message"?: Expr, "line": n }  // e.g. ValueError
+- try: { "kind":"try", "body": Stmt[], "handlers": [{"exc"?: string, "body": Stmt[]}], "line": n }  // try/except (exc e.g. ValueError)
+- unknown: { "kind":"unknown", "line": n, "note"?: string }
 
 Expression nodes:
-- { "kind": "num", "value": number }
-- { "kind": "str", "value": string }
-- { "kind": "bool", "value": boolean }
-- { "kind": "var", "name": string }
-- { "kind": "binop", "op": "+"|"-"|"*"|"/"|"%", "left": Expr, "right": Expr }
-- { "kind": "compare", "op": ">"|"<"|">="|"<="|"=="|"!=", "left": Expr, "right": Expr }
-- { "kind": "boolop", "op": "and"|"or", "values": Expr[] }
-- { "kind": "not", "value": Expr }
-- { "kind": "index", "target": Expr, "index": Expr }   // subscript: target[index]. "first character of name" -> index 0; "last character" -> index -1
-- { "kind": "input", "prompt"?: Expr, "cast"?: "int"|"float" }
+- num, str, bool, var
+- binop: + - * / %
+- compare: > < >= <= == !=
+- boolop: and | or (values: Expr[])
+- not
+- contains: { "kind":"contains", "left": Expr, "right": Expr }  // membership: left in right
+- index: subscript target[index] (index 0 = first, -1 = last)
+- list: { "kind":"list", "items": Expr[] }
+- call: { "kind":"call", "func": string, "args": Expr[] }  // len, sum, max, min, int, float, str, …
+- methodcall: { "kind":"methodcall", "target": Expr, "method": string, "args": Expr[] }  // strip, upper, lower, replace, capitalize, …
+- fstring: { "kind":"fstring", "parts": [{"kind":"lit","value":string}|{"kind":"expr","value":Expr}] }
+- input: { "kind":"input", "prompt"?: Expr, "cast"?: "int"|"float" }
+- cast: { "kind":"cast", "type": "int"|"float"|"str", "value": Expr }
+
+Course coverage (Python quick reference): print/input, variables, int/float/str conversion, f-strings, string + and methods, if/elif/else, and/or/not, for-over-list, for-range, while/break, lists (index/append/len/in/sum/max/min), def/return/call, tuple unpack return, assert, raise, try/except.
 
 STRICT TRANSCRIPTION RULES:
-- Represent ONLY what the text literally says. Never add, infer, complete, or "fix" anything.
-- Do NOT add print/output unless the text explicitly asks to print/show/display/output or tulosta/näytä/kirjoita (Finnish).
-- Do NOT invent default values, helper steps, example usage, or extra output.
-- If the instructions are vague, incomplete, or wrong, faithfully produce a vague/incomplete/wrong AST. Do not repair it.
-- If you cannot represent a construct, emit an "unknown" node instead of guessing.
-- Every node's "line" must be the correct 1-based number of the input line it represents.`;
+- ONLY what the text literally says. Never infer, repair, or add steps.
+- No print unless the line explicitly requests output.
+- No invented defaults, tests, or extra output.
+- If you cannot represent a construct, use "unknown" — do not guess.
+- Each "line" must match the instruction line it represents.`;
 
 export async function translateBlocksViaAst(
   blocks: Block[],
@@ -311,7 +327,7 @@ async function translateSingleBlockViaAst(
   // When configured to fall back, hand any block containing constructs the AST
   // cannot represent to the direct (best-effort) translation mode instead of
   // emitting `# unsupported:` comments.
-  if (options.unsupportedBehavior === "fallback" && hasUnknown(statements)) {
+  if (options.unsupportedBehavior === "fallback" && statementsContainUnknown(statements)) {
     const pythonCode = await translateSingleBlock(block, options);
     return {
       pythonCode,
@@ -323,22 +339,6 @@ async function translateSingleBlockViaAst(
   }
 
   return { pythonCode: generatePython(statements), warnings };
-}
-
-function hasUnknown(statements: Stmt[]): boolean {
-  for (const stmt of statements) {
-    if (stmt.kind === "unknown") return true;
-    if (stmt.kind === "if") {
-      if (hasUnknown(stmt.body) || hasUnknown(stmt.orelse)) return true;
-    } else if (
-      stmt.kind === "while" ||
-      stmt.kind === "repeat" ||
-      stmt.kind === "for"
-    ) {
-      if (hasUnknown(stmt.body)) return true;
-    }
-  }
-  return false;
 }
 
 /**

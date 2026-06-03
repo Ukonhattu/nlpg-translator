@@ -2,17 +2,12 @@ import { lineRequestsOutput } from "./outputVerbs.js";
 
 /**
  * Intermediate representation (AST) for the natural-language -> Python pipeline.
- *
- * The LLM's job is to *transcribe* the source instructions into this structure,
- * not to write Python. The code generator (codegen.ts) then turns the AST into
- * Python deterministically, so it can never add anything that is not in the AST.
- *
- * To keep the model's output small (and therefore fast), the model cites the
- * source by 1-based `line` number rather than copying the text verbatim. During
- * verification we resolve that line number to the actual source text and store
- * it in the `source` field for downstream use (codegen of "unknown" comments and
- * the print-output check). Nodes whose line number is out of range are dropped.
+ * Covers constructs from the Aalto Intro to Programming Python quick reference.
  */
+
+export type FStringPart =
+  | { kind: "lit"; value: string }
+  | { kind: "expr"; value: Expr };
 
 export type Expr =
   | { kind: "num"; value: number }
@@ -29,10 +24,26 @@ export type Expr =
   | { kind: "boolop"; op: "and" | "or"; values: Expr[] }
   | { kind: "not"; value: Expr }
   | { kind: "index"; target: Expr; index: Expr }
-  | { kind: "input"; prompt?: Expr; cast?: "int" | "float" };
+  | { kind: "input"; prompt?: Expr; cast?: "int" | "float" }
+  | { kind: "cast"; type: "int" | "float" | "str"; value: Expr }
+  | { kind: "list"; items: Expr[] }
+  | { kind: "call"; func: string; args: Expr[] }
+  | { kind: "methodcall"; target: Expr; method: string; args: Expr[] }
+  | { kind: "fstring"; parts: FStringPart[] }
+  | { kind: "contains"; left: Expr; right: Expr };
+
+export type ElifClause = { test: Expr; body: Stmt[] };
+
+export type ExceptHandler = { exc?: string; body: Stmt[] };
 
 export type Stmt =
-  | { kind: "assign"; target: string; value: Expr; source: string }
+  | {
+      kind: "assign";
+      target?: string;
+      targetExpr?: Expr;
+      value: Expr;
+      source: string;
+    }
   | {
       kind: "augassign";
       target: string;
@@ -40,11 +51,13 @@ export type Stmt =
       value: Expr;
       source: string;
     }
+  | { kind: "unpackassign"; targets: string[]; value: Expr; source: string }
   | { kind: "print"; value: Expr; source: string }
   | {
       kind: "if";
       test: Expr;
       body: Stmt[];
+      elifs?: ElifClause[];
       orelse: Stmt[];
       source: string;
     }
@@ -57,6 +70,32 @@ export type Stmt =
       stop: Expr;
       step?: Expr;
       body: Stmt[];
+      source: string;
+    }
+  | {
+      kind: "forin";
+      loopVar: string;
+      iterable: Expr;
+      body: Stmt[];
+      source: string;
+    }
+  | { kind: "break"; source: string }
+  | { kind: "append"; target: string; value: Expr; source: string }
+  | {
+      kind: "functiondef";
+      name: string;
+      params: string[];
+      body: Stmt[];
+      docstring?: string;
+      source: string;
+    }
+  | { kind: "return"; values: Expr[]; source: string }
+  | { kind: "assert"; test: Expr; message?: Expr; source: string }
+  | { kind: "raise"; excType: string; message?: Expr; source: string }
+  | {
+      kind: "try";
+      body: Stmt[];
+      handlers: ExceptHandler[];
       source: string;
     }
   | { kind: "unknown"; source: string; note?: string };
@@ -74,27 +113,50 @@ const EXPR_KINDS = new Set([
   "not",
   "index",
   "input",
+  "cast",
+  "list",
+  "call",
+  "methodcall",
+  "fstring",
+  "contains",
 ]);
 
 const STMT_KINDS = new Set([
   "assign",
   "augassign",
+  "unpackassign",
   "print",
   "if",
   "while",
   "repeat",
   "for",
+  "forin",
+  "break",
+  "append",
+  "functiondef",
+  "return",
+  "assert",
+  "raise",
+  "try",
   "unknown",
 ]);
 
 const COMPARE_OPS = new Set([">", "<", ">=", "<=", "==", "!="]);
 const BINOPS = new Set(["+", "-", "*", "/", "%"]);
 const AUG_OPS = new Set(["+", "-", "*", "/"]);
+const CAST_TYPES = new Set(["int", "float", "str"]);
 
 export type VerifyResult = {
   statements: Stmt[];
   warnings: string[];
 };
+
+function isFstringPart(part: any): part is FStringPart {
+  if (!part || typeof part !== "object") return false;
+  if (part.kind === "lit") return typeof part.value === "string";
+  if (part.kind === "expr") return isExpr(part.value);
+  return false;
+}
 
 function isExpr(node: any): node is Expr {
   if (!node || typeof node !== "object" || !EXPR_KINDS.has(node.kind)) {
@@ -133,16 +195,63 @@ function isExpr(node: any): node is Expr {
           node.cast === "int" ||
           node.cast === "float")
       );
+    case "cast":
+      return CAST_TYPES.has(node.type) && isExpr(node.value);
+    case "list":
+      return Array.isArray(node.items) && node.items.every(isExpr);
+    case "call":
+      return (
+        typeof node.func === "string" &&
+        node.func.trim().length > 0 &&
+        Array.isArray(node.args) &&
+        node.args.every(isExpr)
+      );
+    case "methodcall":
+      return (
+        typeof node.method === "string" &&
+        node.method.trim().length > 0 &&
+        isExpr(node.target) &&
+        Array.isArray(node.args) &&
+        node.args.every(isExpr)
+      );
+    case "fstring":
+      return (
+        Array.isArray(node.parts) &&
+        node.parts.length > 0 &&
+        node.parts.every(isFstringPart)
+      );
+    case "contains":
+      return isExpr(node.left) && isExpr(node.right);
     default:
       return false;
   }
 }
 
-/**
- * Validates a single statement node against the schema. Returns the typed node
- * if structurally valid, or null otherwise. Bodies are validated recursively
- * via {@link verifyStatements}; here we only check this node's own shape.
- */
+function isAssignTargetValid(node: any): boolean {
+  const hasName =
+    typeof node.target === "string" && node.target.trim().length > 0;
+  const hasExpr = node.targetExpr !== undefined && isExpr(node.targetExpr);
+  return hasName !== hasExpr;
+}
+
+function isElifClause(clause: any): clause is ElifClause {
+  return (
+    clause &&
+    typeof clause === "object" &&
+    isExpr(clause.test) &&
+    Array.isArray(clause.body)
+  );
+}
+
+function isExceptHandler(handler: any): handler is ExceptHandler {
+  return (
+    handler &&
+    typeof handler === "object" &&
+    (handler.exc === undefined || typeof handler.exc === "string") &&
+    Array.isArray(handler.body)
+  );
+}
+
 function validateStmtShape(node: any): boolean {
   if (!node || typeof node !== "object" || !STMT_KINDS.has(node.kind)) {
     return false;
@@ -151,11 +260,20 @@ function validateStmtShape(node: any): boolean {
 
   switch (node.kind) {
     case "assign":
-      return typeof node.target === "string" && isExpr(node.value);
+      return isAssignTargetValid(node) && isExpr(node.value);
     case "augassign":
       return (
         typeof node.target === "string" &&
         AUG_OPS.has(node.op) &&
+        isExpr(node.value)
+      );
+    case "unpackassign":
+      return (
+        Array.isArray(node.targets) &&
+        node.targets.length >= 1 &&
+        node.targets.every(
+          (t: unknown) => typeof t === "string" && (t as string).trim().length > 0
+        ) &&
         isExpr(node.value)
       );
     case "print":
@@ -164,7 +282,9 @@ function validateStmtShape(node: any): boolean {
       return (
         isExpr(node.test) &&
         Array.isArray(node.body) &&
-        Array.isArray(node.orelse)
+        Array.isArray(node.orelse) &&
+        (node.elifs === undefined ||
+          (Array.isArray(node.elifs) && node.elifs.every(isElifClause)))
       );
     case "while":
       return isExpr(node.test) && Array.isArray(node.body);
@@ -179,6 +299,52 @@ function validateStmtShape(node: any): boolean {
         (node.step === undefined || isExpr(node.step)) &&
         Array.isArray(node.body)
       );
+    case "forin":
+      return (
+        typeof node.loopVar === "string" &&
+        node.loopVar.trim().length > 0 &&
+        isExpr(node.iterable) &&
+        Array.isArray(node.body)
+      );
+    case "break":
+      return true;
+    case "append":
+      return (
+        typeof node.target === "string" &&
+        node.target.trim().length > 0 &&
+        isExpr(node.value)
+      );
+    case "functiondef":
+      return (
+        typeof node.name === "string" &&
+        node.name.trim().length > 0 &&
+        Array.isArray(node.params) &&
+        node.params.every(
+          (p: unknown) => typeof p === "string" && (p as string).trim().length > 0
+        ) &&
+        (node.docstring === undefined || typeof node.docstring === "string") &&
+        Array.isArray(node.body)
+      );
+    case "return":
+      return Array.isArray(node.values) && node.values.every(isExpr);
+    case "assert":
+      return (
+        isExpr(node.test) &&
+        (node.message === undefined || isExpr(node.message))
+      );
+    case "raise":
+      return (
+        typeof node.excType === "string" &&
+        node.excType.trim().length > 0 &&
+        (node.message === undefined || isExpr(node.message))
+      );
+    case "try":
+      return (
+        Array.isArray(node.body) &&
+        Array.isArray(node.handlers) &&
+        node.handlers.length >= 1 &&
+        node.handlers.every(isExceptHandler)
+      );
     case "unknown":
       return true;
     default:
@@ -186,13 +352,85 @@ function validateStmtShape(node: any): boolean {
   }
 }
 
-/**
- * Recursively validates and fidelity-checks a list of statements against the
- * original source lines. Each node cites a 1-based `line`; we resolve it to the
- * actual source text (stored in `source`). Nodes that fail validation or cite a
- * line outside the source are dropped (per the project's "drop on no source
- * basis" policy), and a warning is recorded for each drop.
- */
+/** Nested statement lists inside a node (for verification and unknown detection). */
+export function childStatementLists(stmt: Stmt): Stmt[][] {
+  switch (stmt.kind) {
+    case "if": {
+      const lists = [stmt.body, stmt.orelse];
+      for (const clause of stmt.elifs ?? []) lists.push(clause.body);
+      return lists;
+    }
+    case "while":
+    case "repeat":
+    case "for":
+    case "forin":
+      return [stmt.body];
+    case "functiondef":
+      return [stmt.body];
+    case "try": {
+      const lists = [stmt.body];
+      for (const h of stmt.handlers) lists.push(h.body);
+      return lists;
+    }
+    default:
+      return [];
+  }
+}
+
+export function statementsContainUnknown(statements: Stmt[]): boolean {
+  for (const stmt of statements) {
+    if (stmt.kind === "unknown") return true;
+    for (const body of childStatementLists(stmt)) {
+      if (statementsContainUnknown(body)) return true;
+    }
+  }
+  return false;
+}
+
+function verifyStmtBodies(node: any, sourceLines: string[], warnings: string[], where: string): void {
+  switch (node.kind) {
+    case "if":
+      node.body = verifyStatements(node.body, sourceLines, warnings, `${where}.body`);
+      if (Array.isArray(node.elifs)) {
+        node.elifs.forEach((clause: ElifClause, i: number) => {
+          clause.body = verifyStatements(
+            clause.body,
+            sourceLines,
+            warnings,
+            `${where}.elifs[${i}].body`
+          );
+        });
+      }
+      node.orelse = verifyStatements(
+        node.orelse,
+        sourceLines,
+        warnings,
+        `${where}.orelse`
+      );
+      break;
+    case "while":
+    case "repeat":
+    case "for":
+    case "forin":
+      node.body = verifyStatements(node.body, sourceLines, warnings, `${where}.body`);
+      break;
+    case "functiondef":
+      node.body = verifyStatements(node.body, sourceLines, warnings, `${where}.body`);
+      break;
+    case "try":
+      node.body = verifyStatements(node.body, sourceLines, warnings, `${where}.body`);
+      node.handlers.forEach((handler: ExceptHandler, i: number) => {
+        handler.body = verifyStatements(
+          handler.body,
+          sourceLines,
+          warnings,
+          `${where}.handlers[${i}].body`
+        );
+      });
+      break;
+  }
+}
+
 export function verifyStatements(
   nodes: any[],
   sourceLines: string[],
@@ -213,8 +451,6 @@ export function verifyStatements(
       return;
     }
 
-    // Fidelity: the cited line must exist in the input. Resolve it to the actual
-    // source text so codegen and the output check can use it.
     if (node.line > sourceLines.length) {
       warnings.push(
         `Dropped '${node.kind}' at ${where}: cited line ${node.line} ` +
@@ -224,8 +460,6 @@ export function verifyStatements(
     }
     node.source = sourceLines[node.line - 1];
 
-    // Fidelity: a print must be attributed to a line that actually asks for
-    // output, otherwise the model invented it.
     if (node.kind === "print" && !lineRequestsOutput(node.source)) {
       warnings.push(
         `Dropped 'print' at ${where}: cited line ${node.line} ` +
@@ -234,42 +468,13 @@ export function verifyStatements(
       return;
     }
 
-    if (node.kind === "if") {
-      node.body = verifyStatements(
-        node.body,
-        sourceLines,
-        warnings,
-        `${where}.body`
-      );
-      node.orelse = verifyStatements(
-        node.orelse,
-        sourceLines,
-        warnings,
-        `${where}.orelse`
-      );
-    } else if (
-      node.kind === "while" ||
-      node.kind === "repeat" ||
-      node.kind === "for"
-    ) {
-      node.body = verifyStatements(
-        node.body,
-        sourceLines,
-        warnings,
-        `${where}.body`
-      );
-    }
-
+    verifyStmtBodies(node, sourceLines, warnings, where);
     result.push(node as Stmt);
   });
 
   return result;
 }
 
-/**
- * Parses, validates, and fidelity-checks a raw program object produced by the
- * LLM. Returns the surviving statements plus any warnings about dropped nodes.
- */
 export function verifyProgram(raw: any, sourceText: string): VerifyResult {
   const warnings: string[] = [];
   if (!raw || typeof raw !== "object" || !Array.isArray(raw.statements)) {
