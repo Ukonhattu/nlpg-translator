@@ -60,7 +60,9 @@ async function translateSingleBlock(
     options,
     options.reasoningEffort
   );
-  return enforceFidelity(rawText, block.text);
+  return enforceFidelity(rawText, block.text, {
+    strictOutputFidelity: options.strictOutputFidelity,
+  });
 }
 
 async function callAaltoResponses(
@@ -132,15 +134,19 @@ function extractResponseText(data: any): string {
 }
 
 /**
- * Deterministically removes content the model may have added that is not
- * present in the source instructions. The prompt asks the model not to add
- * anything, but this is a hard guarantee on top of that:
- *  - strips markdown code fences (non-code lines)
- *  - removes print() statements beyond the number explicitly requested in the
- *    natural language source, keeping the resulting Python valid.
+ * Post-processes direct-mode model output. Always strips markdown code fences.
+ * When strictOutputFidelity is set, also removes print() lines beyond the
+ * number of source lines that use explicit output verbs.
  */
-export function enforceFidelity(modelText: string, sourceText: string): string {
+export function enforceFidelity(
+  modelText: string,
+  sourceText: string,
+  options: { strictOutputFidelity?: boolean } = {}
+): string {
   const withoutFences = stripCodeFences(modelText);
+  if (!options.strictOutputFidelity) {
+    return withoutFences;
+  }
   const allowedPrints = countRequestedPrints(sourceText);
   return removeUnrequestedPrints(withoutFences, allowedPrints);
 }
@@ -214,7 +220,7 @@ function isSoleBlockBody(lines: string[], idx: number): boolean {
 
 export type AstTranslationResult = {
   pythonCode: string;
-  warnings: string[];
+  diagnostics: string[];
 };
 
 const AST_SYSTEM_PROMPT = `You are a parser. Convert beginner-friendly natural language programming instructions into a JSON Abstract Syntax Tree (AST). You DO NOT write Python. Map English and Finnish course phrasing to the same AST.
@@ -279,14 +285,16 @@ export async function translateBlocksViaAst(
   }
 
   const snippets: string[] = [];
-  const warnings: string[] = [];
+  const diagnostics: string[] = [];
   for (const block of blocks) {
-    const { pythonCode, warnings: blockWarnings } =
+    const { pythonCode, diagnostics: blockDiagnostics } =
       await translateSingleBlockViaAst(block, options);
     if (pythonCode) snippets.push(pythonCode);
-    warnings.push(...blockWarnings.map((w) => `[${block.id}] ${w}`));
+    diagnostics.push(
+      ...blockDiagnostics.map((d) => `[${block.id}] ${d}`)
+    );
   }
-  return { pythonCode: snippets.join("\n\n"), warnings };
+  return { pythonCode: snippets.join("\n\n"), diagnostics };
 }
 
 async function translateSingleBlockViaAst(
@@ -314,31 +322,33 @@ async function translateSingleBlockViaAst(
   try {
     parsed = parseJsonObject(rawText);
   } catch (err: any) {
-    return {
-      pythonCode: "",
-      warnings: [
-        `Could not parse model output as JSON: ${err.message ?? String(err)}`,
-      ],
-    };
+    const diagnostics = options.includeDiagnostics
+      ? [`Could not parse model output as JSON: ${err.message ?? String(err)}`]
+      : [];
+    return { pythonCode: "", diagnostics };
   }
 
-  const { statements, warnings } = verifyProgram(parsed, block.text);
+  const { statements, diagnostics } = verifyProgram(parsed, block.text, {
+    strictOutputFidelity: options.strictOutputFidelity,
+    collectDiagnostics: options.includeDiagnostics,
+  });
 
   // When configured to fall back, hand any block containing constructs the AST
   // cannot represent to the direct (best-effort) translation mode instead of
   // emitting `# unsupported:` comments.
   if (options.unsupportedBehavior === "fallback" && statementsContainUnknown(statements)) {
     const pythonCode = await translateSingleBlock(block, options);
+    const fallbackNote =
+      "Block contained unsupported construct(s); fell back to direct best-effort translation.";
     return {
       pythonCode,
-      warnings: [
-        ...warnings,
-        "Block contained unsupported construct(s); fell back to direct best-effort translation.",
-      ],
+      diagnostics: options.includeDiagnostics
+        ? [...diagnostics, fallbackNote]
+        : diagnostics,
     };
   }
 
-  return { pythonCode: generatePython(statements), warnings };
+  return { pythonCode: generatePython(statements), diagnostics };
 }
 
 /**

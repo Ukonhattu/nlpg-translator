@@ -14,10 +14,10 @@ export type TranslationResult = {
   pythonCode: string;
   errors: LintError[];
   /**
-   * Non-fatal notices, e.g. AST nodes dropped because they were not grounded in
-   * the source (only populated when astMode is enabled).
+   * Translator-internal notices (AST verify, fallback, etc.). Only included when
+   * includeDiagnostics is true — intended for teachers/debugging, not students.
    */
-  warnings?: string[];
+  diagnostics?: string[];
 };
 
 export type TranslateOptions = {
@@ -49,6 +49,15 @@ export type TranslateOptions = {
    * to "low" since transcribing instructions into an AST is largely mechanical.
    */
   reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  /**
+   * When true, include diagnostics on the translation result (default false).
+   */
+  includeDiagnostics?: boolean;
+  /**
+   * When true, drop or strip print/output not grounded in explicit output verbs
+   * on the cited source line. Default false (warn in AST mode, keep prints).
+   */
+  strictOutputFidelity?: boolean;
 };
 
 import { lintProgram } from "./linter.js";
@@ -66,11 +75,15 @@ export async function translateProgram(
   }
 
   if (options.astMode) {
-    const { pythonCode, warnings } = await translateBlocksViaAst(
+    const { pythonCode, diagnostics } = await translateBlocksViaAst(
       blocks,
       options
     );
-    return { pythonCode, errors: [], warnings };
+    const result: TranslationResult = { pythonCode, errors: [] };
+    if (options.includeDiagnostics && diagnostics.length > 0) {
+      result.diagnostics = diagnostics;
+    }
+    return result;
   }
 
   const pythonCode = await translateBlocks(blocks, options);

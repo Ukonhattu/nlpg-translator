@@ -15,6 +15,8 @@ app.post("/translate", async (req: Request, res: Response) => {
       astMode,
       unsupportedBehavior,
       reasoningEffort,
+      includeDiagnostics,
+      strictOutputFidelity,
     } = req.body as {
       blocks: Block[];
       endpoint?: string;
@@ -24,6 +26,8 @@ app.post("/translate", async (req: Request, res: Response) => {
       astMode?: boolean;
       unsupportedBehavior?: "comment" | "fallback";
       reasoningEffort?: "minimal" | "low" | "medium" | "high";
+      includeDiagnostics?: boolean;
+      strictOutputFidelity?: boolean;
     };
 
     if (!Array.isArray(blocks) || blocks.length === 0) {
@@ -44,6 +48,8 @@ app.post("/translate", async (req: Request, res: Response) => {
       astMode,
       unsupportedBehavior,
       reasoningEffort,
+      includeDiagnostics,
+      strictOutputFidelity,
     });
 
     res.json(result);

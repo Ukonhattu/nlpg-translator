@@ -5,7 +5,7 @@ import { translateProgram, type Block } from "./index.js";
 
 function usage() {
   console.error(
-    "Usage: nlp2py <file> [--endpoint <url>] [--lint] [--separate-blocks] [--ast] [--unsupported <comment|fallback>] [--reasoning <minimal|low|medium|high>]"
+    "Usage: nlp2py <file> [--endpoint <url>] [--lint] [--separate-blocks] [--ast] [--unsupported <comment|fallback>] [--reasoning <minimal|low|medium|high>] [--verbose] [--strict-output-fidelity]"
   );
 }
 
@@ -18,6 +18,8 @@ async function main() {
   let astMode = false;
   let unsupportedBehavior: "comment" | "fallback" = "comment";
   let reasoningEffort: "minimal" | "low" | "medium" | "high" | undefined;
+  let includeDiagnostics = false;
+  let strictOutputFidelity = false;
   let endpointFlagProvided = false;
 
   for (let i = 0; i < args.length; i++) {
@@ -59,6 +61,16 @@ async function main() {
       }
       unsupportedBehavior = value;
       i++;
+      continue;
+    }
+
+    if (arg === "--verbose") {
+      includeDiagnostics = true;
+      continue;
+    }
+
+    if (arg === "--strict-output-fidelity") {
+      strictOutputFidelity = true;
       continue;
     }
 
@@ -125,6 +137,8 @@ async function main() {
     astMode,
     unsupportedBehavior,
     reasoningEffort,
+    includeDiagnostics,
+    strictOutputFidelity,
   });
 
   if (result.errors.length > 0) {
@@ -135,9 +149,9 @@ async function main() {
     process.exit(1);
   }
 
-  if (result.warnings && result.warnings.length > 0) {
-    for (const w of result.warnings) {
-      console.error(`warning: ${w}`);
+  if (result.diagnostics && result.diagnostics.length > 0) {
+    for (const d of result.diagnostics) {
+      console.error(`diagnostic: ${d}`);
     }
   }
 

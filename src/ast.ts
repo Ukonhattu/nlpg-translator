@@ -146,9 +146,16 @@ const BINOPS = new Set(["+", "-", "*", "/", "%"]);
 const AUG_OPS = new Set(["+", "-", "*", "/"]);
 const CAST_TYPES = new Set(["int", "float", "str"]);
 
+export type VerifyOptions = {
+  /** When true, drop print nodes not grounded in output verbs on the cited line. */
+  strictOutputFidelity?: boolean;
+  /** When true, record messages in diagnostics (default false). */
+  collectDiagnostics?: boolean;
+};
+
 export type VerifyResult = {
   statements: Stmt[];
-  warnings: string[];
+  diagnostics: string[];
 };
 
 function isFstringPart(part: any): part is FStringPart {
@@ -387,44 +394,77 @@ export function statementsContainUnknown(statements: Stmt[]): boolean {
   return false;
 }
 
-function verifyStmtBodies(node: any, sourceLines: string[], warnings: string[], where: string): void {
+function verifyStmtBodies(
+  node: any,
+  sourceLines: string[],
+  diagnostics: string[],
+  where: string,
+  options: VerifyOptions
+): void {
   switch (node.kind) {
     case "if":
-      node.body = verifyStatements(node.body, sourceLines, warnings, `${where}.body`);
+      node.body = verifyStatements(
+        node.body,
+        sourceLines,
+        diagnostics,
+        `${where}.body`,
+        options
+      );
       if (Array.isArray(node.elifs)) {
         node.elifs.forEach((clause: ElifClause, i: number) => {
           clause.body = verifyStatements(
             clause.body,
             sourceLines,
-            warnings,
-            `${where}.elifs[${i}].body`
+            diagnostics,
+            `${where}.elifs[${i}].body`,
+            options
           );
         });
       }
       node.orelse = verifyStatements(
         node.orelse,
         sourceLines,
-        warnings,
-        `${where}.orelse`
+        diagnostics,
+        `${where}.orelse`,
+        options
       );
       break;
     case "while":
     case "repeat":
     case "for":
     case "forin":
-      node.body = verifyStatements(node.body, sourceLines, warnings, `${where}.body`);
+      node.body = verifyStatements(
+        node.body,
+        sourceLines,
+        diagnostics,
+        `${where}.body`,
+        options
+      );
       break;
     case "functiondef":
-      node.body = verifyStatements(node.body, sourceLines, warnings, `${where}.body`);
+      node.body = verifyStatements(
+        node.body,
+        sourceLines,
+        diagnostics,
+        `${where}.body`,
+        options
+      );
       break;
     case "try":
-      node.body = verifyStatements(node.body, sourceLines, warnings, `${where}.body`);
+      node.body = verifyStatements(
+        node.body,
+        sourceLines,
+        diagnostics,
+        `${where}.body`,
+        options
+      );
       node.handlers.forEach((handler: ExceptHandler, i: number) => {
         handler.body = verifyStatements(
           handler.body,
           sourceLines,
-          warnings,
-          `${where}.handlers[${i}].body`
+          diagnostics,
+          `${where}.handlers[${i}].body`,
+          options
         );
       });
       break;
@@ -434,54 +474,70 @@ function verifyStmtBodies(node: any, sourceLines: string[], warnings: string[], 
 export function verifyStatements(
   nodes: any[],
   sourceLines: string[],
-  warnings: string[],
-  path = "program"
+  diagnostics: string[],
+  path = "program",
+  options: VerifyOptions = {}
 ): Stmt[] {
   const result: Stmt[] = [];
+  const note = (message: string) => {
+    if (options.collectDiagnostics) diagnostics.push(message);
+  };
 
   nodes.forEach((node, index) => {
     const where = `${path}[${index}]`;
 
     if (!validateStmtShape(node)) {
-      warnings.push(
-        `Dropped malformed node at ${where} (kind: ${
-          node?.kind ?? "unknown"
-        }).`
-      );
+      note(`Skipped invalid step at ${where} (kind: ${node?.kind ?? "unknown"}).`);
       return;
     }
 
     if (node.line > sourceLines.length) {
-      warnings.push(
-        `Dropped '${node.kind}' at ${where}: cited line ${node.line} ` +
-          `is outside the input (${sourceLines.length} lines).`
+      note(
+        `Skipped '${node.kind}' at ${where}: line ${node.line} is outside the input (${sourceLines.length} lines).`
       );
       return;
     }
     node.source = sourceLines[node.line - 1];
 
     if (node.kind === "print" && !lineRequestsOutput(node.source)) {
-      warnings.push(
-        `Dropped 'print' at ${where}: cited line ${node.line} ` +
-          `(${JSON.stringify(node.source)}) does not request any output.`
+      if (options.strictOutputFidelity) {
+        note(
+          `Line ${node.line}: omitted print (source line does not request output).`
+        );
+        return;
+      }
+      note(
+        `Line ${node.line}: print may not match source (no output verb on that line).`
       );
-      return;
     }
 
-    verifyStmtBodies(node, sourceLines, warnings, where);
+    verifyStmtBodies(node, sourceLines, diagnostics, where, options);
     result.push(node as Stmt);
   });
 
   return result;
 }
 
-export function verifyProgram(raw: any, sourceText: string): VerifyResult {
-  const warnings: string[] = [];
+export function verifyProgram(
+  raw: any,
+  sourceText: string,
+  options: VerifyOptions = {}
+): VerifyResult {
+  const diagnostics: string[] = [];
+  const note = (message: string) => {
+    if (options.collectDiagnostics) diagnostics.push(message);
+  };
   if (!raw || typeof raw !== "object" || !Array.isArray(raw.statements)) {
-    warnings.push("Model did not return a valid program object.");
-    return { statements: [], warnings };
+    note("Model did not return a valid program object.");
+    return { statements: [], diagnostics };
   }
   const sourceLines = sourceText.split(/\r?\n/);
-  const statements = verifyStatements(raw.statements, sourceLines, warnings);
-  return { statements, warnings };
+  const statements = verifyStatements(
+    raw.statements,
+    sourceLines,
+    diagnostics,
+    "program",
+    options
+  );
+  return { statements, diagnostics };
 }
