@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import fs from "fs";
 import path from "path";
-import { translateProgram, type Block, type LlmApi } from "./index.js";
+import { translateProgram, type Block, type LlmApi, type LlmProtocol } from "./index.js";
 import { resolveLlmConfig } from "./llmConfig.js";
 
 function usage() {
   console.error(
-    "Usage: nlp2py <file> [--api azure|gateway] [--endpoint <url>] [--model <name>] [--lint] [--separate-blocks] [--ast] [--unsupported <comment|fallback>] [--reasoning <minimal|low|medium|high>] [--verbose] [--strict-output-fidelity]"
+    "Usage: nlp2py <file> [--api azure|gateway] [--protocol responses|chat] [--endpoint <url>] [--model <name>] [--lint] [--separate-blocks] [--ast] [--unsupported <comment|fallback>] [--reasoning <minimal|low|medium|high>] [--verbose] [--strict-output-fidelity]"
   );
 }
 
@@ -14,6 +14,7 @@ async function main() {
   const args = process.argv.slice(2);
   let filePath: string | undefined;
   let llmApi: LlmApi | undefined;
+  let llmProtocol: LlmProtocol | undefined;
   let endpoint: string | undefined;
   let model: string | undefined;
   let enableLint = false;
@@ -35,6 +36,17 @@ async function main() {
         process.exit(1);
       }
       llmApi = value;
+      i++;
+      continue;
+    }
+
+    if (arg === "--protocol") {
+      const value = args[i + 1];
+      if (value !== "responses" && value !== "chat") {
+        console.error("Error: --protocol requires 'responses' or 'chat'.");
+        process.exit(1);
+      }
+      llmProtocol = value;
       i++;
       continue;
     }
@@ -151,6 +163,7 @@ async function main() {
   try {
     resolved = resolveLlmConfig({
       llmApi,
+      llmProtocol,
       aaltoApiKey: process.env.AALTO_API_KEY,
       gatewayApiKey: process.env.LLM_GATEWAY_API_KEY,
       endpoint,
@@ -163,6 +176,7 @@ async function main() {
 
   const result = await translateProgram(blocks, {
     llmApi: resolved.llmApi,
+    llmProtocol: resolved.llmProtocol,
     aaltoApiKey: process.env.AALTO_API_KEY,
     gatewayApiKey: process.env.LLM_GATEWAY_API_KEY,
     endpoint: resolved.endpoint,

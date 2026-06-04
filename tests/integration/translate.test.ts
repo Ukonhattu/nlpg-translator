@@ -88,8 +88,8 @@ describeIntegration("translateProgram (live Aalto API)", () => {
   });
 });
 
-describeGatewayIntegration("translateProgram (live k8s gateway chat API)", () => {
-  it("AST mode translates a minimal program via chat completions", async () => {
+describeGatewayIntegration("translateProgram (live k8s gateway responses API)", () => {
+  it("AST mode translates a minimal program via gateway responses", async () => {
     const result = await translateProgram(
       [
         {

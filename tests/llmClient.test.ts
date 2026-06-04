@@ -68,17 +68,22 @@ describe("callLlm via translateBlocks", () => {
     expect(url).toContain("aalto-openai-apigw");
     const headers = init.headers as Record<string, string>;
     expect(headers["Ocp-Apim-Subscription-Key"]).toBe("azure-key");
-    expect(headers.AdminKey).toBeUndefined();
+    expect(headers.Authorization).toBeUndefined();
     const body = JSON.parse(init.body as string);
     expect(body.input).toBeDefined();
     expect(body.messages).toBeUndefined();
   });
 
-  it("posts Chat Completions shape to gateway with AdminKey", async () => {
+  it("posts Responses API shape to gateway with Bearer Authorization by default", async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
-        choices: [{ message: { content: "b = 2" } }],
+        output: [
+          {
+            type: "message",
+            content: [{ type: "output_text", text: "b = 2" }],
+          },
+        ],
       }),
     });
 
@@ -89,9 +94,32 @@ describe("callLlm via translateBlocks", () => {
 
     expect(code.trim()).toBe("b = 2");
     const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("llm-gateway.k8s.aalto.fi");
+    expect(url).toContain("/api/v1/responses");
     const headers = init.headers as Record<string, string>;
-    expect(headers.AdminKey).toBe("gw-key");
+    expect(headers.Authorization).toBe("Bearer gw-key");
+    const body = JSON.parse(init.body as string);
+    expect(body.input).toBeDefined();
+    expect(body.messages).toBeUndefined();
+  });
+
+  it("posts Chat Completions shape to gateway when llmProtocol is chat", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: "b = 2" } }],
+      }),
+    });
+
+    const code = await translateBlocks(
+      [{ id: "b1", text: "Let b be 2." }],
+      { llmApi: "gateway", llmProtocol: "chat", gatewayApiKey: "gw-key" }
+    );
+
+    expect(code.trim()).toBe("b = 2");
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/chat/completions");
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer gw-key");
     expect(headers["Ocp-Apim-Subscription-Key"]).toBeUndefined();
     const body = JSON.parse(init.body as string);
     expect(body.messages).toHaveLength(2);
@@ -127,7 +155,43 @@ describe("callLlm via translateBlocks", () => {
     expect(body.reasoning).toEqual({ effort: "low" });
   });
 
-  it("AST mode uses chat completions with the same endpoint and model fields", async () => {
+  it("AST mode uses gateway responses with endpoint and model overrides", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text:
+                  '{"statements":[{"kind":"assign","target":"a","value":{"kind":"num","value":1},"line":1}]}',
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    await translateBlocksViaAst(
+      [{ id: "b1", text: "1: Let a be 1." }],
+      {
+        llmApi: "gateway",
+        gatewayApiKey: "gw-key",
+        model: "custom-model",
+        endpoint: "https://gw.example/responses",
+      }
+    );
+
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://gw.example/responses");
+    const body = JSON.parse(init.body as string);
+    expect(body.model).toBe("custom-model");
+    expect(body.input).toBeDefined();
+  });
+
+  it("AST mode uses chat completions when llmProtocol is chat", async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -145,15 +209,16 @@ describe("callLlm via translateBlocks", () => {
       [{ id: "b1", text: "1: Let a be 1." }],
       {
         llmApi: "gateway",
+        llmProtocol: "chat",
         gatewayApiKey: "gw-key",
         model: "custom-qwen",
         endpoint: "https://gw.example/chat",
       }
     );
 
-    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("https://gw.example/chat");
-    const body = JSON.parse(init.body as string);
+    const body = JSON.parse(
+      (mockFetch.mock.calls[0][1] as RequestInit).body as string
+    );
     expect(body.model).toBe("custom-qwen");
     expect(body.messages).toBeDefined();
   });

@@ -73,7 +73,7 @@ async function callLlm(
   reasoningEffort?: TranslateOptions["reasoningEffort"]
 ): Promise<string> {
   const config = resolveLlmConfig(options);
-  if (config.llmApi === "gateway") {
+  if (config.llmProtocol === "chat") {
     return callChatCompletions(systemPrompt, userContent, config);
   }
   return callResponses(systemPrompt, userContent, config, reasoningEffort);
@@ -126,7 +126,7 @@ async function postLlm(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      [config.authHeaderName]: config.apiKey,
+      ...config.authHeaders,
     },
     body: JSON.stringify(body),
   });

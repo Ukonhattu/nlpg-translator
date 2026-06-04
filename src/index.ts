@@ -20,9 +20,9 @@ export type TranslationResult = {
   diagnostics?: string[];
 };
 
-import type { LlmApi } from "./llmConfig.js";
+import type { LlmApi, LlmProtocol } from "./llmConfig.js";
 
-export type { LlmApi };
+export type { LlmApi, LlmProtocol };
 
 export type TranslateOptions = {
   /**
@@ -30,7 +30,7 @@ export type TranslateOptions = {
    */
   aaltoApiKey?: string;
   /**
-   * K8s LLM gateway key (Chat Completions). Required for llmApi=gateway unless LLM_GATEWAY_API_KEY is set in the environment.
+   * K8s LLM gateway key. Required for llmApi=gateway unless LLM_GATEWAY_API_KEY is set in the environment.
    */
   gatewayApiKey?: string;
   /**
@@ -38,6 +38,10 @@ export type TranslateOptions = {
    * Both `azure` and `gateway` support direct mode (default) and `astMode`.
    */
   llmApi?: LlmApi;
+  /**
+   * OpenAI API protocol. Default "responses" (Azure and gateway both support Responses and Chat Completions).
+   */
+  llmProtocol?: LlmProtocol;
   /** API URL override (Azure or gateway). */
   endpoint?: string;
   /** Model name override (Azure or gateway). */

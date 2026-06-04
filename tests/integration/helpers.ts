@@ -24,7 +24,7 @@ export function integrationOptions(
   };
 }
 
-/** Options for live k8s gateway Chat Completions tests (requires LLM_GATEWAY_API_KEY). */
+/** Options for live k8s gateway Responses API tests (requires LLM_GATEWAY_API_KEY). */
 export function gatewayIntegrationOptions(
   overrides: Partial<TranslateOptions> = {}
 ): TranslateOptions {
@@ -34,8 +34,9 @@ export function gatewayIntegrationOptions(
   }
   return {
     llmApi: "gateway",
+    llmProtocol: "responses",
     gatewayApiKey: key,
-    endpoint: process.env.LLM_GATEWAY_CHAT_ENDPOINT,
+    endpoint: process.env.LLM_GATEWAY_RESPONSES_ENDPOINT,
     model: process.env.LLM_GATEWAY_MODEL,
     reasoningEffort: "low",
     ...overrides,
