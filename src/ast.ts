@@ -1,3 +1,7 @@
+import {
+  promoteOrphanPassIntoLoopBodies,
+  tryRecoverUnknownFromSource,
+} from "./astRecovery.js";
 import { lineRequestsOutput } from "./outputVerbs.js";
 
 /**
@@ -489,6 +493,15 @@ export function verifyStatements(
   nodes.forEach((node, index) => {
     const where = `${path}[${index}]`;
 
+    if (node.kind === "unknown") {
+      const recovered = tryRecoverUnknownFromSource(
+        sourceLines[(node.line ?? 1) - 1] ?? ""
+      );
+      if (recovered) {
+        node = { ...recovered, line: node.line };
+      }
+    }
+
     if (!validateStmtShape(node)) {
       note(`Skipped invalid step at ${where} (kind: ${node?.kind ?? "unknown"}).`);
       return;
@@ -542,12 +555,14 @@ export function verifyProgram(
     return { statements: [], diagnostics };
   }
   const sourceLines = sourceText.split(/\r?\n/);
-  const statements = verifyStatements(
-    raw.statements,
-    sourceLines,
-    diagnostics,
-    "program",
-    options
+  const statements = promoteOrphanPassIntoLoopBodies(
+    verifyStatements(
+      raw.statements,
+      sourceLines,
+      diagnostics,
+      "program",
+      options
+    )
   );
   return { statements, diagnostics };
 }

@@ -250,7 +250,7 @@ Statement nodes:
 - while: { "kind":"while", "test": Expr, "body": Stmt[], "line": n }  // includes while True
 - repeat: { "kind":"repeat", "count": Expr, "body": Stmt[], "line": n }  // fixed-count loop without index variable
 - for: { "kind":"for", "loopVar": string, "start": Expr, "stop": Expr, "step"?: Expr, "body": Stmt[], "line": n }  // numeric range; stop is EXCLUSIVE (Python range)
-- forin: { "kind":"forin", "loopVar": string, "iterable": Expr, "body": Stmt[], "line": n }  // for each item in a list
+- forin: { "kind":"forin", "loopVar": string, "iterable": Expr, "body": Stmt[], "line": n }  // for each item in a list; English "For each X in Y" / Finnish "Jokaiselle X-arvolle listassa Y"
 - break: { "kind":"break", "line": n }
 - pass: { "kind":"pass", "line": n }  // source line is literally "pass" (empty block placeholder)
 - append: { "kind":"append", "target": string, "value": Expr, "line": n }  // add to end of list
@@ -280,8 +280,9 @@ Course coverage (Python quick reference): print/input, variables, int/float/str 
 
 STRICT TRANSCRIPTION RULES:
 - ONLY what the text literally says. Never infer, repair, or add steps.
+- Emit statements in source line order. A variable may be used on an earlier line and assigned later — still transcribe those steps (do not use "unknown" just because an assignment appears later).
 - No print unless the line explicitly requests output.
-- Use pass only when the source line is literally "pass" (placeholder for an otherwise empty block).
+- Use pass only when the source line is literally "pass" (placeholder for an otherwise empty block). Put pass inside the loop/if body array, not as a separate top-level statement after a loop header.
 - No invented defaults, tests, or extra output.
 - If you cannot represent a construct, use "unknown" — do not guess.
 - Each "line" must match the instruction line it represents.`;
