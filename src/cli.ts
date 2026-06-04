@@ -1,18 +1,21 @@
 #!/usr/bin/env node
 import fs from "fs";
 import path from "path";
-import { translateProgram, type Block } from "./index.js";
+import { translateProgram, type Block, type LlmApi } from "./index.js";
+import { resolveLlmConfig } from "./llmConfig.js";
 
 function usage() {
   console.error(
-    "Usage: nlp2py <file> [--endpoint <url>] [--lint] [--separate-blocks] [--ast] [--unsupported <comment|fallback>] [--reasoning <minimal|low|medium|high>] [--verbose] [--strict-output-fidelity]"
+    "Usage: nlp2py <file> [--api azure|gateway] [--endpoint <url>] [--model <name>] [--lint] [--separate-blocks] [--ast] [--unsupported <comment|fallback>] [--reasoning <minimal|low|medium|high>] [--verbose] [--strict-output-fidelity]"
   );
 }
 
 async function main() {
   const args = process.argv.slice(2);
   let filePath: string | undefined;
-  let endpoint = process.env.AALTO_ENDPOINT;
+  let llmApi: LlmApi | undefined;
+  let endpoint: string | undefined;
+  let model: string | undefined;
   let enableLint = false;
   let separateBlocks = false;
   let astMode = false;
@@ -25,6 +28,17 @@ async function main() {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
 
+    if (arg === "--api") {
+      const value = args[i + 1];
+      if (value !== "azure" && value !== "gateway") {
+        console.error("Error: --api requires 'azure' or 'gateway'.");
+        process.exit(1);
+      }
+      llmApi = value;
+      i++;
+      continue;
+    }
+
     if (arg === "--endpoint") {
       endpointFlagProvided = true;
       if (!args[i + 1] || args[i + 1].startsWith("--")) {
@@ -32,6 +46,16 @@ async function main() {
         process.exit(1);
       }
       endpoint = args[i + 1];
+      i++;
+      continue;
+    }
+
+    if (arg === "--model") {
+      if (!args[i + 1] || args[i + 1].startsWith("--")) {
+        console.error("Error: --model requires a model name.");
+        process.exit(1);
+      }
+      model = args[i + 1];
       i++;
       continue;
     }
@@ -123,15 +147,26 @@ async function main() {
     },
   ];
 
-  const apiKey = process.env.AALTO_API_KEY;
-  if (!apiKey) {
-    console.error("Error: AALTO_API_KEY environment variable is not set.");
+  let resolved;
+  try {
+    resolved = resolveLlmConfig({
+      llmApi,
+      aaltoApiKey: process.env.AALTO_API_KEY,
+      gatewayApiKey: process.env.LLM_GATEWAY_API_KEY,
+      endpoint,
+      model,
+    });
+  } catch (err: any) {
+    console.error(`Error: ${err.message ?? String(err)}`);
     process.exit(1);
   }
 
   const result = await translateProgram(blocks, {
-    aaltoApiKey: apiKey,
-    aaltoEndpoint: endpoint,
+    llmApi: resolved.llmApi,
+    aaltoApiKey: process.env.AALTO_API_KEY,
+    gatewayApiKey: process.env.LLM_GATEWAY_API_KEY,
+    endpoint: resolved.endpoint,
+    model: resolved.model,
     enableLint,
     separateBlocks,
     astMode,

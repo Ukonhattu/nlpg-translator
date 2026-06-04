@@ -35,3 +35,6 @@ jobs:
         env:
           AALTO_API_KEY: ${{ secrets.AALTO_API_KEY }}
           AALTO_ENDPOINT: ${{ secrets.AALTO_ENDPOINT }}
+          LLM_GATEWAY_API_KEY: ${{ secrets.LLM_GATEWAY_API_KEY }}
+          LLM_GATEWAY_CHAT_ENDPOINT: ${{ secrets.LLM_GATEWAY_CHAT_ENDPOINT }}
+          LLM_GATEWAY_MODEL: ${{ secrets.LLM_GATEWAY_MODEL }}

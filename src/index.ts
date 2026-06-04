@@ -20,9 +20,31 @@ export type TranslationResult = {
   diagnostics?: string[];
 };
 
+import type { LlmApi } from "./llmConfig.js";
+
+export type { LlmApi };
+
 export type TranslateOptions = {
-  aaltoApiKey: string;
+  /**
+   * Azure Responses API key. Required for llmApi=azure unless AALTO_API_KEY is set in the environment.
+   */
+  aaltoApiKey?: string;
+  /**
+   * K8s LLM gateway key (Chat Completions). Required for llmApi=gateway unless LLM_GATEWAY_API_KEY is set in the environment.
+   */
+  gatewayApiKey?: string;
+  /**
+   * LLM backend. Default "azure".
+   * Both `azure` and `gateway` support direct mode (default) and `astMode`.
+   */
+  llmApi?: LlmApi;
+  /** API URL override (Azure or gateway). */
+  endpoint?: string;
+  /** Model name override (Azure or gateway). */
+  model?: string;
+  /** @deprecated Use `endpoint`. */
   aaltoEndpoint?: string;
+  /** @deprecated Use `model`. */
   aaltoModel?: string;
   enableLint?: boolean;
   separateBlocks?: boolean;

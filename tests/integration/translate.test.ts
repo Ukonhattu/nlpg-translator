@@ -5,11 +5,14 @@ import { translateProgram } from "../../src/index.js";
 import {
   expectCleanPython,
   expectPatterns,
+  gatewayIntegrationOptions,
   hasApiKey,
+  hasGatewayApiKey,
   integrationOptions,
 } from "./helpers.js";
 
 const describeIntegration = hasApiKey ? describe : describe.skip;
+const describeGatewayIntegration = hasGatewayApiKey ? describe : describe.skip;
 
 const examplesDir = join(import.meta.dirname, "../../examples");
 
@@ -82,5 +85,23 @@ describeIntegration("translateProgram (live Aalto API)", () => {
     expect(result.errors).toEqual([]);
     expectCleanPython(result.pythonCode);
     expect(result.pythonCode).toMatch(/print\s*\(/);
+  });
+});
+
+describeGatewayIntegration("translateProgram (live k8s gateway chat API)", () => {
+  it("AST mode translates a minimal program via chat completions", async () => {
+    const result = await translateProgram(
+      [
+        {
+          id: "minimal",
+          text: "Let the score be 0.\nPrint the score.",
+        },
+      ],
+      gatewayIntegrationOptions({ astMode: true })
+    );
+
+    expect(result.errors).toEqual([]);
+    expectCleanPython(result.pythonCode);
+    expectPatterns(result.pythonCode, [/score\s*=\s*0/, /print\s*\(/]);
   });
 });

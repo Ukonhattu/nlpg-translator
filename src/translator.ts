@@ -1,5 +1,6 @@
 import fetch from "node-fetch";
 import type { Block, TranslateOptions } from "./index.js";
+import { resolveLlmConfig, type ResolvedLlmConfig } from "./llmConfig.js";
 import {
   statementsContainUnknown,
   verifyProgram,
@@ -54,7 +55,7 @@ async function translateSingleBlock(
     "Add nothing that is not explicitly stated in the instructions.\n\n" +
     block.text;
 
-  const rawText = await callAaltoResponses(
+  const rawText = await callLlm(
     systemPrompt,
     userContent,
     options,
@@ -65,20 +66,27 @@ async function translateSingleBlock(
   });
 }
 
-async function callAaltoResponses(
+async function callLlm(
   systemPrompt: string,
   userContent: string,
   options: TranslateOptions,
   reasoningEffort?: TranslateOptions["reasoningEffort"]
 ): Promise<string> {
-  const {
-    aaltoApiKey,
-    aaltoEndpoint = "https://aalto-openai-apigw.azure-api.net/v1/openai/responses",
-    aaltoModel = "gpt-5-2025-08-07",
-  } = options;
+  const config = resolveLlmConfig(options);
+  if (config.llmApi === "gateway") {
+    return callChatCompletions(systemPrompt, userContent, config);
+  }
+  return callResponses(systemPrompt, userContent, config, reasoningEffort);
+}
 
+async function callResponses(
+  systemPrompt: string,
+  userContent: string,
+  config: ResolvedLlmConfig,
+  reasoningEffort?: TranslateOptions["reasoningEffort"]
+): Promise<string> {
   const body: Record<string, unknown> = {
-    model: aaltoModel,
+    model: config.model,
     input: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userContent },
@@ -89,25 +97,59 @@ async function callAaltoResponses(
     body.reasoning = { effort: reasoningEffort };
   }
 
-  const res = await fetch(aaltoEndpoint, {
+  const data = await postLlm(config, body);
+  return extractResponseText(data);
+}
+
+async function callChatCompletions(
+  systemPrompt: string,
+  userContent: string,
+  config: ResolvedLlmConfig
+): Promise<string> {
+  const body = {
+    model: config.model,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userContent },
+    ],
+  };
+
+  const data = await postLlm(config, body);
+  return extractChatCompletionText(data);
+}
+
+async function postLlm(
+  config: ResolvedLlmConfig,
+  body: Record<string, unknown> | object
+): Promise<any> {
+  const res = await fetch(config.endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Ocp-Apim-Subscription-Key": aaltoApiKey,
+      [config.authHeaderName]: config.apiKey,
     },
     body: JSON.stringify(body),
   });
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Aalto AI request failed (${res.status}): ${text}`);
+    throw new Error(`LLM request failed (${res.status}): ${text}`);
   }
 
-  const data: any = await res.json();
-  return extractResponseText(data);
+  return res.json();
 }
 
-function extractResponseText(data: any): string {
+export function extractChatCompletionText(data: any): string {
+  const content = data?.choices?.[0]?.message?.content;
+  if (typeof content === "string") {
+    return content;
+  }
+
+  const fallback = data?.choices?.[0]?.text ?? data?.text ?? JSON.stringify(data);
+  return typeof fallback === "string" ? fallback : String(fallback ?? "");
+}
+
+export function extractResponseText(data: any): string {
   // Aalto uses OpenAI Responses API format. We want the assistant's text only.
   // Example: data.output is an array; we find the message with type "message",
   // then its content item with type "output_text" and read .text.
@@ -311,7 +353,7 @@ async function translateSingleBlockViaAst(
     "Cite each node's origin with its line number. Output only the JSON object.\n\n" +
     numberedSource;
 
-  const rawText = await callAaltoResponses(
+  const rawText = await callLlm(
     AST_SYSTEM_PROMPT,
     userContent,
     options,

@@ -1,5 +1,6 @@
 import express, { type Request, type Response } from "express";
-import { translateProgram, type Block } from "./index.js";
+import { translateProgram, type Block, type LlmApi } from "./index.js";
+import { resolveLlmConfig } from "./llmConfig.js";
 
 const app = express();
 app.use(express.json());
@@ -8,6 +9,7 @@ app.post("/translate", async (req: Request, res: Response) => {
   try {
     const {
       blocks,
+      llmApi,
       endpoint,
       model,
       enableLint,
@@ -19,6 +21,7 @@ app.post("/translate", async (req: Request, res: Response) => {
       strictOutputFidelity,
     } = req.body as {
       blocks: Block[];
+      llmApi?: LlmApi;
       endpoint?: string;
       model?: string;
       enableLint?: boolean;
@@ -34,23 +37,34 @@ app.post("/translate", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "blocks must be a non-empty array" });
     }
 
-    const apiKey = process.env.AALTO_API_KEY;
-    if (!apiKey) {
-      return res.status(500).json({ error: "AALTO_API_KEY not configured" });
+    let translateOptions;
+    try {
+      resolveLlmConfig({
+        llmApi,
+        endpoint,
+        model,
+        aaltoApiKey: process.env.AALTO_API_KEY,
+        gatewayApiKey: process.env.LLM_GATEWAY_API_KEY,
+      });
+      translateOptions = {
+        llmApi,
+        aaltoApiKey: process.env.AALTO_API_KEY,
+        gatewayApiKey: process.env.LLM_GATEWAY_API_KEY,
+        endpoint,
+        model,
+        enableLint,
+        separateBlocks,
+        astMode,
+        unsupportedBehavior,
+        reasoningEffort,
+        includeDiagnostics,
+        strictOutputFidelity,
+      };
+    } catch (err: any) {
+      return res.status(400).json({ error: err.message ?? "Invalid LLM configuration" });
     }
 
-    const result = await translateProgram(blocks, {
-      aaltoApiKey: apiKey,
-      aaltoEndpoint: endpoint || process.env.AALTO_ENDPOINT,
-      aaltoModel: model,
-      enableLint,
-      separateBlocks,
-      astMode,
-      unsupportedBehavior,
-      reasoningEffort,
-      includeDiagnostics,
-      strictOutputFidelity,
-    });
+    const result = await translateProgram(blocks, translateOptions);
 
     res.json(result);
   } catch (err: any) {
