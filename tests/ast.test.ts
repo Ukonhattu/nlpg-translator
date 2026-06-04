@@ -213,6 +213,59 @@ describe("statementsContainUnknown", () => {
     expect(statementsContainUnknown(stmts)).toBe(true);
   });
 
+  it("accepts pass placeholder on a pass source line", () => {
+    const source = "If x is greater than 0:\n  pass\nElse:\n  Set y to 1.";
+    const { statements, diagnostics } = verifyProgram(
+      {
+        statements: [
+          {
+            kind: "if",
+            test: {
+              kind: "compare",
+              op: ">",
+              left: { kind: "var", name: "x" },
+              right: { kind: "num", value: 0 },
+            },
+            body: [{ kind: "pass", line: 2 }],
+            orelse: [
+              {
+                kind: "assign",
+                target: "y",
+                value: { kind: "num", value: 1 },
+                line: 4,
+              },
+            ],
+            line: 1,
+          },
+        ],
+      },
+      source
+    );
+
+    expect(diagnostics).toEqual([]);
+    expect(statements).toHaveLength(1);
+    const ifStmt = statements[0];
+    expect(ifStmt.kind).toBe("if");
+    if (ifStmt.kind === "if") {
+      expect(ifStmt.body).toHaveLength(1);
+      expect(ifStmt.body[0].kind).toBe("pass");
+      expect(ifStmt.body[0].source.trim()).toBe("pass");
+    }
+  });
+
+  it("drops pass when source line is not pass", () => {
+    const { statements, diagnostics } = verifyProgram(
+      {
+        statements: [{ kind: "pass", line: 1 }],
+      },
+      "Let x be 1.",
+      { collectDiagnostics: true }
+    );
+
+    expect(statements).toHaveLength(0);
+    expect(diagnostics.some((d) => d.includes("pass placeholder"))).toBe(true);
+  });
+
   it("finds unknown inside functiondef and try handler bodies", () => {
     const stmts: Stmt[] = [
       {

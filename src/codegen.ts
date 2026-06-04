@@ -164,6 +164,8 @@ export function emitStmt(stmt: Stmt, indent = ""): string[] {
     }
     case "break":
       return [`${indent}break`];
+    case "pass":
+      return [`${indent}pass`];
     case "append":
       return [
         `${indent}${sanitizeIdentifier(stmt.target)}.append(${emitExpr(stmt.value)})`,

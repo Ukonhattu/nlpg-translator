@@ -104,6 +104,19 @@ describe("generatePython", () => {
     expect(code).toContain('print(f"x={x}")');
   });
 
+  it("emits explicit pass statements", () => {
+    const code = generatePython([
+      stmt({
+        kind: "if",
+        test: { kind: "bool", value: true },
+        body: [stmt({ kind: "pass", source: "pass" })],
+        orelse: [],
+      }),
+    ]);
+
+    expect(code).toBe("if True:\n    pass");
+  });
+
   it("emits empty block bodies as pass", () => {
     const code = generatePython([
       stmt({

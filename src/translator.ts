@@ -252,6 +252,7 @@ Statement nodes:
 - for: { "kind":"for", "loopVar": string, "start": Expr, "stop": Expr, "step"?: Expr, "body": Stmt[], "line": n }  // numeric range; stop is EXCLUSIVE (Python range)
 - forin: { "kind":"forin", "loopVar": string, "iterable": Expr, "body": Stmt[], "line": n }  // for each item in a list
 - break: { "kind":"break", "line": n }
+- pass: { "kind":"pass", "line": n }  // source line is literally "pass" (empty block placeholder)
 - append: { "kind":"append", "target": string, "value": Expr, "line": n }  // add to end of list
 - functiondef: { "kind":"functiondef", "name": string, "params": string[], "body": Stmt[], "docstring"?: string, "line": n }
 - return: { "kind":"return", "values": Expr[], "line": n }  // empty values [] for bare return; multiple values for tuple return
@@ -280,6 +281,7 @@ Course coverage (Python quick reference): print/input, variables, int/float/str 
 STRICT TRANSCRIPTION RULES:
 - ONLY what the text literally says. Never infer, repair, or add steps.
 - No print unless the line explicitly requests output.
+- Use pass only when the source line is literally "pass" (placeholder for an otherwise empty block).
 - No invented defaults, tests, or extra output.
 - If you cannot represent a construct, use "unknown" — do not guess.
 - Each "line" must match the instruction line it represents.`;

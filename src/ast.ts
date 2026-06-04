@@ -80,6 +80,7 @@ export type Stmt =
       source: string;
     }
   | { kind: "break"; source: string }
+  | { kind: "pass"; source: string }
   | { kind: "append"; target: string; value: Expr; source: string }
   | {
       kind: "functiondef";
@@ -132,6 +133,7 @@ const STMT_KINDS = new Set([
   "for",
   "forin",
   "break",
+  "pass",
   "append",
   "functiondef",
   "return",
@@ -314,6 +316,7 @@ function validateStmtShape(node: any): boolean {
         Array.isArray(node.body)
       );
     case "break":
+    case "pass":
       return true;
     case "append":
       return (
@@ -498,6 +501,13 @@ export function verifyStatements(
       return;
     }
     node.source = sourceLines[node.line - 1];
+
+    if (node.kind === "pass" && node.source.trim().toLowerCase() !== "pass") {
+      note(
+        `Skipped 'pass' at ${where}: line ${node.line} is not a pass placeholder (got: ${JSON.stringify(node.source.trim())}).`
+      );
+      return;
+    }
 
     if (node.kind === "print" && !lineRequestsOutput(node.source)) {
       if (options.strictOutputFidelity) {
