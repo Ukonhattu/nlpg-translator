@@ -1,6 +1,6 @@
 # NLPG Translator
 
-TypeScript service and CLI that translate beginner-friendly natural language programming instructions into Python. LLM calls use the [Aalto Azure OpenAI gateway](https://aalto-openai-apigw.azure-api.net/) or the [Aalto k8s LLM gateway](https://llm-gateway.k8s.aalto.fi/docs). Each backend supports OpenAI **Responses** (default) and **Chat Completions** APIs.
+TypeScript service and CLI that translate beginner-friendly natural language programming instructions into Python via the OpenAI **Responses API**, using either the [Aalto Azure gateway](https://aalto-openai-apigw.azure-api.net/) or the [Aalto k8s LLM gateway](https://llm-gateway.k8s.aalto.fi/docs).
 
 Designed for intro programming courses: step-by-step English or Finnish instructions → Python suitable for CS1 (variables, control flow, lists, functions, exceptions, and more in AST mode).
 
@@ -26,7 +26,6 @@ npm run build
 | `AALTO_MODEL` | No | Default model for Responses API |
 | `LLM_GATEWAY_API_KEY` | For `llmApi=gateway` | k8s gateway token (`Authorization: Bearer …`) |
 | `LLM_GATEWAY_RESPONSES_ENDPOINT` | No | Gateway Responses URL (default: `/api/v1/responses`) |
-| `LLM_GATEWAY_CHAT_ENDPOINT` | No | Gateway Chat Completions URL (default: `/api/v1/chat/completions`) |
 | `LLM_GATEWAY_MODEL` | No | Default model for gateway |
 | `PORT` | No | HTTP server port (default `4000`) |
 
@@ -50,11 +49,8 @@ npx nlp2py --ast --verbose examples/example.nl
 # Strict print enforcement (legacy behavior)
 npx nlp2py --ast --strict-output-fidelity examples/example.nl
 
-# K8s gateway (Responses API, default protocol) — requires LLM_GATEWAY_API_KEY
+# K8s gateway — requires LLM_GATEWAY_API_KEY
 npx nlp2py --api gateway --ast examples/example.nl
-
-# K8s gateway (Chat Completions)
-npx nlp2py --api gateway --protocol chat --ast examples/example.nl
 ```
 
 Exit code `1` when `--lint` reports errors; otherwise Python is written to stdout.
@@ -64,8 +60,7 @@ Exit code `1` when `--lint` reports errors; otherwise Python is written to stdou
 | Flag | Description |
 |------|-------------|
 | `--api azure\|gateway` | LLM backend (default `azure`) |
-| `--protocol responses\|chat` | OpenAI API shape (default `responses`) |
-| `--model <name>` | Override model for the selected API |
+| `--model <name>` | Override model for the selected backend |
 | `--ast` | AST transcription pipeline |
 | `--lint` | Run rule-based NL linter before calling the API |
 | `--separate-blocks` | Translate each API block independently |
@@ -91,11 +86,10 @@ Shared fields:
 |-------|-------------|
 | `blocks` | Required instruction blocks |
 | `llmApi` | `"azure"` or `"gateway"`; default `"azure"` |
-| `llmProtocol` | `"responses"` or `"chat"`; default `"responses"` |
 | `model` | Model name for the selected backend (optional; env default if omitted) |
-| `endpoint` | API URL override (optional; env default if omitted) |
+| `endpoint` | Responses API URL override (optional) |
 | `astMode` | `true` for AST pipeline, omit/false for direct Python |
-| `reasoningEffort` | Only used with `llmProtocol: "responses"` |
+| `reasoningEffort` | Reasoning effort for the model |
 
 API keys are never sent in the request body (server uses `AALTO_API_KEY` or `LLM_GATEWAY_API_KEY`).
 
@@ -111,26 +105,15 @@ API keys are never sent in the request body (server uses `AALTO_API_KEY` or `LLM
 }
 ```
 
-**K8s gateway Responses (default protocol, AST mode):**
+**K8s gateway (AST mode):**
 
 ```json
 {
   "blocks": [{ "id": "block-1", "text": "Let the score be 0.\nPrint the score." }],
   "llmApi": "gateway",
-  "llmProtocol": "responses",
   "model": "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8",
-  "astMode": true
-}
-```
-
-**K8s gateway Chat Completions:**
-
-```json
-{
-  "blocks": [{ "id": "block-1", "text": "Let the score be 0.\nPrint the score." }],
-  "llmApi": "gateway",
-  "llmProtocol": "chat",
-  "astMode": false
+  "astMode": true,
+  "reasoningEffort": "low"
 }
 ```
 
@@ -172,7 +155,7 @@ const gateway = await translateProgram(blocks, {
 
 ## Translation modes
 
-Direct and AST modes work with **both** backends and **both** protocols (`responses` and `chat`).
+Direct and AST modes work with **both** `llmApi: "azure"` and `llmApi: "gateway"`.
 
 ### Direct mode (default)
 
@@ -214,14 +197,14 @@ Golden fixtures live in `tests/fixtures/golden/`; integration scenarios in `test
 
 ### Integration tests (live API)
 
-Calls the real LLM endpoints. Requires `AALTO_API_KEY` for Responses tests (optional: `AALTO_ENDPOINT`). Chat gateway tests run when `LLM_GATEWAY_API_KEY` is set.
+Calls the real LLM endpoints. Requires `AALTO_API_KEY` for Azure tests (optional: `AALTO_ENDPOINT`). Gateway tests run when `LLM_GATEWAY_API_KEY` is set.
 
 ```bash
 export AALTO_API_KEY=your-key
 npm run test:integration
 ```
 
-Skipped automatically when the key is unset (CI unit job stays green). A separate GitHub Actions job runs integration tests when the `AALTO_API_KEY` repository secret is configured. Gateway chat tests run only when `LLM_GATEWAY_API_KEY` is set.
+Skipped automatically when the key is unset (CI unit job stays green). A separate GitHub Actions job runs integration tests when the `AALTO_API_KEY` repository secret is configured. Gateway tests run only when `LLM_GATEWAY_API_KEY` is set.
 
 ## Docker
 

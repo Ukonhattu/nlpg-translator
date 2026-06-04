@@ -34,7 +34,6 @@ export function gatewayIntegrationOptions(
   }
   return {
     llmApi: "gateway",
-    llmProtocol: "responses",
     gatewayApiKey: key,
     endpoint: process.env.LLM_GATEWAY_RESPONSES_ENDPOINT,
     model: process.env.LLM_GATEWAY_MODEL,

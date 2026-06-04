@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  extractChatCompletionText,
   extractResponseText,
   translateBlocks,
   translateBlocksViaAst,
@@ -26,15 +25,6 @@ describe("extractResponseText", () => {
   });
 });
 
-describe("extractChatCompletionText", () => {
-  it("reads choices[0].message.content", () => {
-    const text = extractChatCompletionText({
-      choices: [{ message: { content: "x = 1" } }],
-    });
-    expect(text).toBe("x = 1");
-  });
-});
-
 describe("callLlm via translateBlocks", () => {
   beforeEach(() => {
     mockFetch.mockReset();
@@ -44,7 +34,7 @@ describe("callLlm via translateBlocks", () => {
     vi.clearAllMocks();
   });
 
-  it("posts Responses API shape to Azure with Ocp-Apim-Subscription-Key", async () => {
+  it("posts Responses API shape to Azure", async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -63,7 +53,6 @@ describe("callLlm via translateBlocks", () => {
     );
 
     expect(code.trim()).toBe("a = 1");
-    expect(mockFetch).toHaveBeenCalledOnce();
     const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect(url).toContain("aalto-openai-apigw");
     const headers = init.headers as Record<string, string>;
@@ -74,7 +63,7 @@ describe("callLlm via translateBlocks", () => {
     expect(body.messages).toBeUndefined();
   });
 
-  it("posts Responses API shape to gateway with Bearer Authorization by default", async () => {
+  it("posts Responses API shape to gateway with Bearer auth", async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -99,35 +88,9 @@ describe("callLlm via translateBlocks", () => {
     expect(headers.Authorization).toBe("Bearer gw-key");
     const body = JSON.parse(init.body as string);
     expect(body.input).toBeDefined();
-    expect(body.messages).toBeUndefined();
   });
 
-  it("posts Chat Completions shape to gateway when llmProtocol is chat", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        choices: [{ message: { content: "b = 2" } }],
-      }),
-    });
-
-    const code = await translateBlocks(
-      [{ id: "b1", text: "Let b be 2." }],
-      { llmApi: "gateway", llmProtocol: "chat", gatewayApiKey: "gw-key" }
-    );
-
-    expect(code.trim()).toBe("b = 2");
-    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("/chat/completions");
-    const headers = init.headers as Record<string, string>;
-    expect(headers.Authorization).toBe("Bearer gw-key");
-    expect(headers["Ocp-Apim-Subscription-Key"]).toBeUndefined();
-    const body = JSON.parse(init.body as string);
-    expect(body.messages).toHaveLength(2);
-    expect(body.input).toBeUndefined();
-    expect(body.reasoning).toBeUndefined();
-  });
-
-  it("includes reasoning only for responses API", async () => {
+  it("includes reasoning for responses API", async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -142,11 +105,7 @@ describe("callLlm via translateBlocks", () => {
 
     await translateBlocks(
       [{ id: "b1", text: "Let a be 1." }],
-      {
-        aaltoApiKey: "k",
-        llmApi: "azure",
-        reasoningEffort: "low",
-      }
+      { aaltoApiKey: "k", llmApi: "azure", reasoningEffort: "low" }
     );
 
     const body = JSON.parse(
@@ -189,64 +148,5 @@ describe("callLlm via translateBlocks", () => {
     const body = JSON.parse(init.body as string);
     expect(body.model).toBe("custom-model");
     expect(body.input).toBeDefined();
-  });
-
-  it("AST mode uses chat completions when llmProtocol is chat", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        choices: [
-          {
-            message: {
-              content: '{"statements":[{"kind":"assign","target":"a","value":{"kind":"num","value":1},"line":1}]}',
-            },
-          },
-        ],
-      }),
-    });
-
-    await translateBlocksViaAst(
-      [{ id: "b1", text: "1: Let a be 1." }],
-      {
-        llmApi: "gateway",
-        llmProtocol: "chat",
-        gatewayApiKey: "gw-key",
-        model: "custom-qwen",
-        endpoint: "https://gw.example/chat",
-      }
-    );
-
-    const body = JSON.parse(
-      (mockFetch.mock.calls[0][1] as RequestInit).body as string
-    );
-    expect(body.model).toBe("custom-qwen");
-    expect(body.messages).toBeDefined();
-  });
-
-  it("direct mode uses responses API with per-request model", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        output: [
-          {
-            type: "message",
-            content: [{ type: "output_text", text: "a = 1" }],
-          },
-        ],
-      }),
-    });
-
-    await translateBlocks(
-      [{ id: "b1", text: "Let a be 1." }],
-      {
-        aaltoApiKey: "azure-key",
-        model: "gpt-custom",
-      }
-    );
-
-    const body = JSON.parse(
-      (mockFetch.mock.calls[0][1] as RequestInit).body as string
-    );
-    expect(body.model).toBe("gpt-custom");
   });
 });

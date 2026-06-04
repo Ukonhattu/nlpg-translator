@@ -20,9 +20,9 @@ export type TranslationResult = {
   diagnostics?: string[];
 };
 
-import type { LlmApi, LlmProtocol } from "./llmConfig.js";
+import type { LlmApi } from "./llmConfig.js";
 
-export type { LlmApi, LlmProtocol };
+export type { LlmApi };
 
 export type TranslateOptions = {
   /**
@@ -38,11 +38,7 @@ export type TranslateOptions = {
    * Both `azure` and `gateway` support direct mode (default) and `astMode`.
    */
   llmApi?: LlmApi;
-  /**
-   * OpenAI API protocol. Default "responses" (Azure and gateway both support Responses and Chat Completions).
-   */
-  llmProtocol?: LlmProtocol;
-  /** API URL override (Azure or gateway). */
+  /** API URL override (Azure or gateway Responses endpoint). */
   endpoint?: string;
   /** Model name override (Azure or gateway). */
   model?: string;

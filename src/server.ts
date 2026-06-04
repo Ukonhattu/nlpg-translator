@@ -1,5 +1,5 @@
 import express, { type Request, type Response } from "express";
-import { translateProgram, type Block, type LlmApi, type LlmProtocol } from "./index.js";
+import { translateProgram, type Block, type LlmApi } from "./index.js";
 import { resolveLlmConfig } from "./llmConfig.js";
 
 const app = express();
@@ -10,7 +10,6 @@ app.post("/translate", async (req: Request, res: Response) => {
     const {
       blocks,
       llmApi,
-      llmProtocol,
       endpoint,
       model,
       enableLint,
@@ -23,7 +22,6 @@ app.post("/translate", async (req: Request, res: Response) => {
     } = req.body as {
       blocks: Block[];
       llmApi?: LlmApi;
-      llmProtocol?: LlmProtocol;
       endpoint?: string;
       model?: string;
       enableLint?: boolean;
@@ -43,7 +41,6 @@ app.post("/translate", async (req: Request, res: Response) => {
     try {
       resolveLlmConfig({
         llmApi,
-        llmProtocol,
         endpoint,
         model,
         aaltoApiKey: process.env.AALTO_API_KEY,
@@ -51,7 +48,6 @@ app.post("/translate", async (req: Request, res: Response) => {
       });
       translateOptions = {
         llmApi,
-        llmProtocol,
         aaltoApiKey: process.env.AALTO_API_KEY,
         gatewayApiKey: process.env.LLM_GATEWAY_API_KEY,
         endpoint,

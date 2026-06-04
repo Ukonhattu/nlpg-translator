@@ -73,9 +73,6 @@ async function callLlm(
   reasoningEffort?: TranslateOptions["reasoningEffort"]
 ): Promise<string> {
   const config = resolveLlmConfig(options);
-  if (config.llmProtocol === "chat") {
-    return callChatCompletions(systemPrompt, userContent, config);
-  }
   return callResponses(systemPrompt, userContent, config, reasoningEffort);
 }
 
@@ -101,23 +98,6 @@ async function callResponses(
   return extractResponseText(data);
 }
 
-async function callChatCompletions(
-  systemPrompt: string,
-  userContent: string,
-  config: ResolvedLlmConfig
-): Promise<string> {
-  const body = {
-    model: config.model,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userContent },
-    ],
-  };
-
-  const data = await postLlm(config, body);
-  return extractChatCompletionText(data);
-}
-
 async function postLlm(
   config: ResolvedLlmConfig,
   body: Record<string, unknown> | object
@@ -137,16 +117,6 @@ async function postLlm(
   }
 
   return res.json();
-}
-
-export function extractChatCompletionText(data: any): string {
-  const content = data?.choices?.[0]?.message?.content;
-  if (typeof content === "string") {
-    return content;
-  }
-
-  const fallback = data?.choices?.[0]?.text ?? data?.text ?? JSON.stringify(data);
-  return typeof fallback === "string" ? fallback : String(fallback ?? "");
 }
 
 export function extractResponseText(data: any): string {
