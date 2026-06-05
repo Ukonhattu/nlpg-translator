@@ -47,7 +47,9 @@ async function translateSingleBlock(
     "- Output only raw Python code: no comments, no explanations, no markdown code fences.\n" +
     "STYLE RULES:\n" +
     "- Do not use augmented assignment operators (+=, -=, *=, /=, %=). Always write " +
-    "the assignment out in full, e.g. use `a = a + value` instead of `a += value`.";
+    "the assignment out in full, e.g. use `a = a + value` instead of `a += value`.\n" +
+    "- For reading user input, use simple assignments only, e.g. `name = input()` or " +
+    "`points = int(input())`. Never use conditional expressions, placeholders, or tricks.";
 
   const userContent =
     "Translate the following block into Python. " +
@@ -146,7 +148,8 @@ export function extractResponseText(data: any): string {
 }
 
 /**
- * Post-processes direct-mode model output. Always strips markdown code fences.
+ * Post-processes direct-mode model output. Always strips markdown code fences,
+ * comments, and dead conditional expressions the model sometimes invents.
  * When strictOutputFidelity is set, also removes print() lines beyond the
  * number of source lines that use explicit output verbs.
  */
@@ -156,11 +159,74 @@ export function enforceFidelity(
   options: { strictOutputFidelity?: boolean } = {}
 ): string {
   const withoutFences = stripCodeFences(modelText);
+  const withoutComments = withoutFences
+    .split(/\r?\n/)
+    .map(stripLineComments)
+    .filter((line) => line.trim().length > 0)
+    .join("\n");
+  const simplified = simplifyDeadTernaries(withoutComments);
   if (!options.strictOutputFidelity) {
-    return withoutFences;
+    return simplified;
   }
   const allowedPrints = countRequestedPrints(sourceText);
-  return removeUnrequestedPrints(withoutFences, allowedPrints);
+  return removeUnrequestedPrints(simplified, allowedPrints);
+}
+
+/** Removes `# ...` from a line, respecting string literals. */
+function stripLineComments(line: string): string {
+  let inString: '"' | "'" | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inString) {
+      if (ch === "\\") {
+        i++;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === "#") {
+      return line.slice(0, i).trimEnd();
+    }
+  }
+  return line;
+}
+
+/**
+ * Collapses dead conditional expressions the model sometimes emits, e.g.
+ * `int(input()) if False else int(input())` -> `int(input())`.
+ */
+function simplifyDeadTernaries(pythonCode: string): string {
+  return pythonCode
+    .split(/\r?\n/)
+    .map((line) => {
+      const assignFalse = line.match(
+        /^(\s*\w+\s*=\s*)(.+)\s+if\s+False\s+else\s+(.+)$/
+      );
+      if (assignFalse) {
+        return `${assignFalse[1]}${assignFalse[3].trim()}`;
+      }
+      const assignTrue = line.match(
+        /^(\s*\w+\s*=\s*)(.+)\s+if\s+True\s+else\s+(.+)$/
+      );
+      if (assignTrue) {
+        return `${assignTrue[1]}${assignTrue[2].trim()}`;
+      }
+      const falseElse = line.match(/^(\s*)(.+?)\s+if\s+False\s+else\s+(.+)$/);
+      if (falseElse) {
+        return `${falseElse[1]}${falseElse[3].trim()}`;
+      }
+      const trueElse = line.match(/^(\s*)(.+?)\s+if\s+True\s+else\s+(.+)$/);
+      if (trueElse) {
+        return `${trueElse[1]}${trueElse[2].trim()}`;
+      }
+      return line;
+    })
+    .join("\n");
 }
 
 function stripCodeFences(text: string): string {
