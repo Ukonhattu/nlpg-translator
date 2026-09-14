@@ -103,6 +103,7 @@ export type Stmt =
       handlers: ExceptHandler[];
       source: string;
     }
+  | { kind: "exprstmt"; expr: Expr; source: string }
   | { kind: "unknown"; source: string; note?: string };
 
 export type Program = { statements: Stmt[] };
@@ -144,6 +145,7 @@ const STMT_KINDS = new Set([
   "assert",
   "raise",
   "try",
+  "exprstmt",
   "unknown",
 ]);
 
@@ -358,6 +360,11 @@ function validateStmtShape(node: any): boolean {
         Array.isArray(node.handlers) &&
         node.handlers.length >= 1 &&
         node.handlers.every(isExceptHandler)
+      );
+    case "exprstmt":
+      return (
+        (node.expr?.kind === "call" || node.expr?.kind === "methodcall") &&
+        isExpr(node.expr)
       );
     case "unknown":
       return true;

@@ -200,6 +200,8 @@ export function emitStmt(stmt: Stmt, indent = ""): string[] {
       }
       return lines;
     }
+    case "exprstmt":
+      return [`${indent}${emitExpr(stmt.expr)}`];
     case "unknown":
       return [
         `${indent}# unsupported: ${stmt.source.replace(/\s+/g, " ").trim()}`,

@@ -325,6 +325,7 @@ Statement nodes:
 - assert: { "kind":"assert", "test": Expr, "message"?: Expr, "line": n }
 - raise: { "kind":"raise", "excType": string, "message"?: Expr, "line": n }  // e.g. ValueError
 - try: { "kind":"try", "body": Stmt[], "handlers": [{"exc"?: string, "body": Stmt[]}], "line": n }  // try/except (exc e.g. ValueError)
+- exprstmt: { "kind":"exprstmt", "expr": call|methodcall, "line": n }  // standalone function/method call for its side effect (no assignment); use when a function is called but its return value is not used
 - unknown: { "kind":"unknown", "line": n, "note"?: string }
 
 Expression nodes:
