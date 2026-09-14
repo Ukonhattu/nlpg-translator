@@ -257,6 +257,27 @@ describe("generatePython", () => {
     expect(code).toContain('print(f"cost: {{")');
   });
 
+  it("emits standalone function and method call statements", () => {
+    const code = generatePython([
+      stmt({
+        kind: "exprstmt",
+        expr: { kind: "call", func: "process_data", args: [{ kind: "var", name: "items" }] },
+      }),
+      stmt({
+        kind: "exprstmt",
+        expr: {
+          kind: "methodcall",
+          target: { kind: "var", name: "db" },
+          method: "close",
+          args: [],
+        },
+      }),
+    ]);
+
+    expect(code).toContain("process_data(items)");
+    expect(code).toContain("db.close()");
+  });
+
   it("emits unknown lines as comments", () => {
     const code = generatePython([
       stmt({ kind: "unknown", source: "use a quantum computer", note: "?" }),

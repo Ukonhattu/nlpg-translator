@@ -156,6 +156,55 @@ describe("verifyProgram", () => {
     expect(diagnostics.some((d) => d.includes("omitted print"))).toBe(true);
   });
 
+  it("accepts valid exprstmt with call expression", () => {
+    const text = "Call process_data.\nCall db.close.";
+    const { statements, diagnostics } = verifyProgram(
+      {
+        statements: [
+          {
+            kind: "exprstmt",
+            expr: { kind: "call", func: "process_data", args: [] },
+            line: 1,
+          },
+          {
+            kind: "exprstmt",
+            expr: {
+              kind: "methodcall",
+              target: { kind: "var", name: "db" },
+              method: "close",
+              args: [],
+            },
+            line: 2,
+          },
+        ],
+      },
+      text
+    );
+
+    expect(diagnostics).toEqual([]);
+    expect(statements).toHaveLength(2);
+    expect(statements[0].source).toBe("Call process_data.");
+    expect(statements[1].source).toBe("Call db.close.");
+  });
+
+  it("rejects exprstmt with a non-call expr", () => {
+    const { statements } = verifyProgram(
+      {
+        statements: [
+          {
+            kind: "exprstmt",
+            expr: { kind: "var", name: "x" },
+            line: 1,
+          },
+        ],
+      },
+      "Let x be 1.",
+      { collectDiagnostics: true }
+    );
+
+    expect(statements).toHaveLength(0);
+  });
+
   it("verifies nested try handler bodies", () => {
     const text = "Try something.\nOn error, print msg.";
     const { statements, diagnostics } = verifyProgram(
