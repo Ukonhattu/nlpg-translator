@@ -46,6 +46,8 @@ export type TranslateOptions = {
   aaltoEndpoint?: string;
   /** @deprecated Use `model`. */
   aaltoModel?: string;
+  /** Timeout for each LLM HTTP request in milliseconds (default 60000). */
+  timeoutMs?: number;
   enableLint?: boolean;
   separateBlocks?: boolean;
   /**

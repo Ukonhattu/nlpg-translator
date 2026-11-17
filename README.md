@@ -22,12 +22,18 @@ npm run build
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `AALTO_API_KEY` | For `llmApi=azure` (default) | Azure APIM subscription key |
-| `AALTO_ENDPOINT` | No | Responses API URL (overridable per request) |
+| `AALTO_ENDPOINT` | No | Responses API URL (library/CLI can override; the HTTP server cannot be overridden per request) |
 | `AALTO_MODEL` | No | Default model for Responses API |
 | `LLM_GATEWAY_API_KEY` | For `llmApi=gateway` | k8s gateway token (`Authorization: Bearer …`) |
 | `LLM_GATEWAY_RESPONSES_ENDPOINT` | No | Gateway Responses URL (default: `/api/v1/responses`) |
 | `LLM_GATEWAY_MODEL` | No | Default model for gateway |
 | `PORT` | No | HTTP server port (default `4000`) |
+| `HOST` | No | HTTP bind address (default `127.0.0.1`). A non-loopback value requires `SERVER_AUTH_TOKEN` |
+| `SERVER_AUTH_TOKEN` | If `HOST` is not loopback | Bearer token required on `POST /translate` |
+| `SERVER_MODEL_PROFILES` | No | JSON map of named model profiles, see [Security](#security-http-server) |
+| `MAX_BLOCKS` | No | Max blocks per request (default `50`) |
+| `MAX_TEXT_CHARS` | No | Max total block text length (default `20000`) |
+| `LLM_TIMEOUT_MS` | No | Timeout per upstream LLM request (default `60000`) |
 
 ## CLI
 
@@ -85,9 +91,7 @@ Shared fields:
 | Field | Description |
 |-------|-------------|
 | `blocks` | Required instruction blocks |
-| `llmApi` | `"azure"` or `"gateway"`; default `"azure"` |
-| `model` | Model name for the selected backend (optional; env default if omitted) |
-| `endpoint` | Responses API URL override (optional) |
+| `modelProfile` | Name of a server-side model profile (optional; first profile or env defaults if omitted). Unknown name → 400 |
 | `astMode` | `true` for AST pipeline, omit/false for direct Python |
 | `reasoningEffort` | Reasoning effort for the model |
 
@@ -98,8 +102,7 @@ API keys are never sent in the request body (server uses `AALTO_API_KEY` or `LLM
 ```json
 {
   "blocks": [{ "id": "block-1", "text": "Let the score be 0.\nPrint the score." }],
-  "llmApi": "azure",
-  "model": "gpt-5-2025-08-07",
+  "modelProfile": "gpt5",
   "astMode": true,
   "reasoningEffort": "low"
 }
@@ -110,14 +113,13 @@ API keys are never sent in the request body (server uses `AALTO_API_KEY` or `LLM
 ```json
 {
   "blocks": [{ "id": "block-1", "text": "Let the score be 0.\nPrint the score." }],
-  "llmApi": "gateway",
-  "model": "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8",
+  "modelProfile": "qwen",
   "astMode": true,
   "reasoningEffort": "low"
 }
 ```
 
-Set `LLM_GATEWAY_API_KEY` on the server when using `llmApi: "gateway"`.
+Profiles are configured on the server, e.g. `SERVER_MODEL_PROFILES='{"gpt5":{"llmApi":"azure","model":"gpt-5-2025-08-07"},"qwen":{"llmApi":"gateway"}}'`. Set `LLM_GATEWAY_API_KEY` on the server when a profile uses the gateway. `llmApi`, `model` and `endpoint` in the request body are ignored.
 
 Response:
 
@@ -129,6 +131,17 @@ Response:
 ```
 
 With `includeDiagnostics: true` and AST mode, non-fatal notices appear in `diagnostics` (intended for teachers/operators, not students).
+
+## Security (HTTP server)
+
+The HTTP server is meant for **internal deployment behind authentication**, not for direct exposure to the internet.
+
+- Endpoints, models and API keys come only from server environment variables; request bodies cannot redirect the server to another URL or select arbitrary models. Use `modelProfile` to choose among operator-defined profiles.
+- The server binds to `127.0.0.1` by default. Set `HOST` to expose it; any non-loopback `HOST` requires `SERVER_AUTH_TOKEN`, and the server refuses to start without it. Clients send `Authorization: Bearer <token>` (compared in constant time; 401 on mismatch).
+- Requests are limited to 64 kB of JSON, `MAX_BLOCKS` blocks and `MAX_TEXT_CHARS` characters; each block needs a string `id` and `text`.
+- Upstream LLM calls time out after `LLM_TIMEOUT_MS`. Upstream error bodies are logged server-side and never returned; clients get a generic 502/504/500 with a `requestId`.
+
+The library and CLI still accept `endpoint`/`model` overrides, because there the caller owns the API key. `timeoutMs` is available in `TranslateOptions`.
 
 ## Library
 
