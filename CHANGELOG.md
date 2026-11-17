@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### New: C target
+
+- **`target: "python" | "c"`** (library option, HTTP field, CLI `--target`).
+  In AST mode the model call is unchanged; a new deterministic generator
+  writes one C11 program. Types are inferred from the program
+  (`src/semantics/`), declarations are placed where they read naturally, and
+  strings/input/lists use small `nl_*` helpers emitted only when used.
+  Statements C cannot express (`try`/`except`, `raise`, tuple returns, values
+  of unknown or conflicting type) become `// unsupported in C:` comments with a
+  `TARGET_UNSUPPORTED` diagnostic and count toward `unknownNodes`, so the block
+  is `partial` and `unsupportedBehavior: "fallback"` works as for Python.
+  Direct mode for C uses the new prompt `direct.c.v1`, C-aware comment
+  stripping and a tree-sitter-c syntax check. `separateBlocks` is rejected for
+  C. Conventions: `/` stays true division (`(double)a / b`), decimals print
+  with `%g`, booleans as `1`/`0`. Plan and rationale:
+  `docs/plans/multi-target.md`.
+- Results gain `code` and `target`; blocks gain `code`. `pythonCode` remains
+  as a deprecated alias that is only present for the Python target. Trace
+  records include `target`. Neutral CLI name `nlpc` (same as `nlp2py`).
+- The `DIRECT_EXTRA_PRINTS` message names the target's output call.
+
 ### Behaviour changes
 
 - **Linter is advisory (Phase 8).** New `lintMode: "off" | "warn" | "block"`

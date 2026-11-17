@@ -19,6 +19,8 @@ export type TraceRecord = {
   requestId: string;
   blockId: string;
   mode: "direct" | "ast";
+  /** Output language ("python", "c"). */
+  target?: string;
   sampleIndex?: number;
   promptId: string;
   promptSha256: string;

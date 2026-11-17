@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 import fs from "fs";
 import path from "path";
-import { translateProgram, type Block, type LlmApi, type TraceRecord } from "./index.js";
+import {
+  TARGET_IDS,
+  translateProgram,
+  type Block,
+  type LlmApi,
+  type TargetId,
+  type TraceRecord,
+} from "./index.js";
 import { resolveLlmConfig } from "./llmConfig.js";
 
 function usage() {
+  const bin = path.basename(process.argv[1] ?? "nlp2py").replace(/\.m?js$/, "");
   console.error(
-    "Usage: nlp2py <file> [--api azure|gateway] [--endpoint <url>] [--model <name>] [--lint] [--lint-mode <off|warn|block>] [--separate-blocks] [--ast] [--unsupported <comment|fallback>] [--reasoning <minimal|low|medium|high>] [--verbose] [--strict-output-fidelity] [--grounding <off|warn|strict>] [--trace <file.jsonl>] [--trace-include-input]"
+    `Usage: ${bin} <file> [--target python|c] [--api azure|gateway] [--endpoint <url>] [--model <name>] [--lint] [--lint-mode <off|warn|block>] [--separate-blocks] [--ast] [--unsupported <comment|fallback>] [--reasoning <minimal|low|medium|high>] [--verbose] [--strict-output-fidelity] [--grounding <off|warn|strict>] [--trace <file.jsonl>] [--trace-include-input]`
   );
 }
 
@@ -28,6 +36,7 @@ async function main() {
   let traceFile: string | undefined;
   let traceIncludeInput = false;
   let endpointFlagProvided = false;
+  let target: TargetId | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -140,6 +149,17 @@ async function main() {
       continue;
     }
 
+    if (arg === "--target") {
+      const value = args[i + 1];
+      if (!(TARGET_IDS as readonly string[]).includes(value)) {
+        console.error(`Error: --target requires one of ${TARGET_IDS.map((t) => `'${t}'`).join(", ")}.`);
+        process.exit(1);
+      }
+      target = value as TargetId;
+      i++;
+      continue;
+    }
+
     if (arg === "--reasoning") {
       const value = args[i + 1];
       if (
@@ -213,6 +233,7 @@ async function main() {
     lintMode,
     separateBlocks,
     astMode,
+    target,
     unsupportedBehavior,
     reasoningEffort,
     includeDiagnostics,
@@ -242,7 +263,7 @@ async function main() {
     }
   }
 
-  process.stdout.write(result.pythonCode + "\n");
+  process.stdout.write(result.code + "\n");
 }
 
 main().catch((err) => {

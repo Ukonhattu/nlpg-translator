@@ -10,6 +10,7 @@ import {
   hasGatewayApiKey,
   integrationOptions,
 } from "./helpers.js";
+import { assertCompiles, LENIENT_FLAGS } from "../helpers/c.js";
 
 const describeIntegration = hasApiKey ? describe : describe.skip;
 const describeGatewayIntegration = hasGatewayApiKey ? describe : describe.skip;
@@ -32,6 +33,19 @@ describeIntegration("translateProgram (live Aalto API)", () => {
       /print\s*\(/,
       />\s*20/,
     ]);
+  });
+
+  it("AST mode with target c produces a compiling C program", async () => {
+    const text = readFileSync(join(examplesDir, "example.nl"), "utf8");
+    const result = await translateProgram(
+      [{ id: "example", text }],
+      integrationOptions({ astMode: true, target: "c" })
+    );
+
+    expect(result.errors).toEqual([]);
+    expect(result.target).toBe("c");
+    expectPatterns(result.code, [/int main\(void\)/, /printf\(/, />\s*20/]);
+    assertCompiles(result.code, LENIENT_FLAGS);
   });
 
   it("AST mode translates examples/integration/complex.nl", async () => {

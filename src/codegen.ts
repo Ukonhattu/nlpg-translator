@@ -14,11 +14,9 @@ const INDENT = "    ";
 
 // --- emit context (diagnostics + identifier collision tracking) ---------------
 
-export type CodegenDiagnostic = {
-  severity: "info" | "warning";
-  code: string;
-  message: string;
-};
+import type { CodegenDiagnostic } from "./targets/types.js";
+
+export type { CodegenDiagnostic };
 
 type EmitContext = {
   diagnostics: string[];

@@ -44,18 +44,29 @@ export type BlockResult = {
    */
   status: TranslationStatus;
   /** This block's own code (empty when failed). */
-  pythonCode: string;
+  code: string;
+  /** @deprecated Use `code`. Present only when the target is "python". */
+  pythonCode?: string;
   droppedNodes: number;
+  /**
+   * `unknown` steps plus steps the target language cannot express (both are
+   * rendered as `unsupported` comments).
+   */
   unknownNodes: number;
   failureReason?: FailureReason;
 };
 
 export type TranslationResult = {
   /**
-   * Generated code. A failed block contributes `# [block <id>: translation
-   * failed]` unless `failedBlockMarker` is false.
+   * Generated code in the `target` language. A failed block contributes a
+   * comment such as `# [block <id>: translation failed]` unless
+   * `failedBlockMarker` is false.
    */
-  pythonCode: string;
+  code: string;
+  /** Language of `code`. */
+  target: TargetId;
+  /** @deprecated Use `code`. Present only when the target is "python". */
+  pythonCode?: string;
   errors: LintError[];
   /**
    * Translator-internal notices (AST verify, fallback, etc.). Only included when
@@ -75,11 +86,19 @@ export type TranslationResult = {
 import type { LlmApi } from "./llmConfig.js";
 import type { DirectPostProcess } from "./direct.js";
 import type { TraceRecord } from "./trace.js";
+import type { TargetId } from "./targets/types.js";
 
-export type { LlmApi, DirectPostProcess, TraceRecord };
+export type { LlmApi, DirectPostProcess, TraceRecord, TargetId };
+export { TARGET_IDS } from "./targets/types.js";
 export { PACKAGE_VERSION } from "./version.js";
 
 export type TranslateOptions = {
+  /**
+   * Output language (default "python"). "c" produces one C11 program; it does
+   * not support `separateBlocks`. In AST mode every target uses the same model
+   * call, only the deterministic code generator differs.
+   */
+  target?: TargetId;
   /**
    * Azure Responses API key. Required for llmApi=azure unless AALTO_API_KEY is set in the environment.
    */
@@ -107,7 +126,7 @@ export type TranslateOptions = {
    */
   throwOnFailure?: boolean;
   /**
-   * Emit `# [block <id>: translation failed]` for failed blocks (default true).
+   * Emit a `[block <id>: translation failed]` comment for failed blocks (default true).
    */
   failedBlockMarker?: boolean;
   /**
@@ -231,6 +250,7 @@ export type TranslateOptions = {
 };
 
 import { lintProgram } from "./linter.js";
+import { getTarget } from "./targets/registry.js";
 import {
   translateBlocksDetailed,
   translateBlocksViaAst,
@@ -247,11 +267,20 @@ export async function translateProgram(
   options: TranslateOptions
 ): Promise<TranslationResult> {
   validateSamples(options.samples);
+  const target = getTarget(options.target);
+  if (options.separateBlocks && !target.supportsSeparateBlocks) {
+    throw new RangeError(`separateBlocks is not supported for target "${target.id}"`);
+  }
 
   const lintMode = resolveLintMode(options);
   const lintErrors = lintMode === "off" ? [] : lintProgram(blocks);
   if (lintMode === "block" && lintErrors.length > 0) {
-    return { pythonCode: "", errors: lintErrors };
+    return {
+      code: "",
+      target: target.id,
+      ...(target.id === "python" ? { pythonCode: "" } : {}),
+      errors: lintErrors,
+    };
   }
 
   const outcome = options.astMode
@@ -259,7 +288,9 @@ export async function translateProgram(
     : await translateBlocksDetailed(blocks, options);
 
   const result: TranslationResult = {
-    pythonCode: outcome.pythonCode,
+    code: outcome.code,
+    target: outcome.target,
+    ...(outcome.target === "python" ? { pythonCode: outcome.code } : {}),
     errors: [],
     blocks: outcome.blocks,
     status: outcome.status,

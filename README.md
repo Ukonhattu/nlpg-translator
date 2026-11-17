@@ -1,8 +1,8 @@
 # NLPG Translator
 
-TypeScript service and CLI that translate beginner-friendly natural language programming instructions into Python via the OpenAI **Responses API**, using either the [Aalto Azure gateway](https://aalto-openai-apigw.azure-api.net/) or the [Aalto k8s LLM gateway](https://llm-gateway.k8s.aalto.fi/docs).
+TypeScript service and CLI that translate beginner-friendly natural language programming instructions into Python or C via the OpenAI **Responses API**, using either the [Aalto Azure gateway](https://aalto-openai-apigw.azure-api.net/) or the [Aalto k8s LLM gateway](https://llm-gateway.k8s.aalto.fi/docs).
 
-Designed for intro programming courses: step-by-step English or Finnish instructions → Python suitable for CS1 (variables, control flow, lists, functions, exceptions, and more in AST mode).
+Designed for intro programming courses: step-by-step English or Finnish instructions → Python (default) or C11 suitable for CS1 (variables, control flow, lists, functions, exceptions, and more in AST mode). See [Target languages](#target-languages).
 
 ## Requirements
 
@@ -57,14 +57,18 @@ npx nlp2py --ast --strict-output-fidelity examples/example.nl
 
 # K8s gateway — requires LLM_GATEWAY_API_KEY
 npx nlp2py --api gateway --ast examples/example.nl
+
+# C instead of Python (`nlpc` is the same CLI under a language-neutral name)
+npx nlpc --target c --ast examples/example.nl
 ```
 
-Exit code `1` when `--lint` reports errors; otherwise Python is written to stdout.
+Exit code `1` when `--lint` reports errors; otherwise the code is written to stdout.
 
 ### CLI flags
 
 | Flag | Description |
 |------|-------------|
+| `--target python\|c` | Output language (default `python`) |
 | `--api azure\|gateway` | LLM backend (default `azure`) |
 | `--model <name>` | Override model for the selected backend |
 | `--ast` | AST transcription pipeline |
@@ -96,7 +100,8 @@ Shared fields:
 |-------|-------------|
 | `blocks` | Required instruction blocks |
 | `modelProfile` | Name of a server-side model profile (optional; first profile or env defaults if omitted). Unknown name → 400 |
-| `astMode` | `true` for AST pipeline, omit/false for direct Python |
+| `astMode` | `true` for AST pipeline, omit/false for direct mode |
+| `target` | `"python"` (default) or `"c"`. Unknown values → 400; `"c"` with `separateBlocks: true` → 400 |
 | `reasoningEffort` | Reasoning effort for the model |
 
 API keys are never sent in the request body (server uses `AALTO_API_KEY` or `LLM_GATEWAY_API_KEY`).
@@ -129,10 +134,14 @@ Response:
 
 ```json
 {
+  "code": "score = 0\nprint(score)",
+  "target": "python",
   "pythonCode": "score = 0\nprint(score)",
   "errors": []
 }
 ```
+
+`pythonCode` is only included for the Python target; new clients should read `code`.
 
 With `includeDiagnostics: true` and AST mode, non-fatal notices appear in `diagnostics` (intended for teachers/operators, not students).
 
@@ -180,15 +189,17 @@ In AST mode the request carries a strict JSON Schema for the AST (`text.format`)
 
 ## Result status and diagnostics
 
-`translateProgram` returns, besides `pythonCode` and `errors`:
+`translateProgram` returns, besides `code`, `target` and `errors`:
 
 | Field | Description |
 |-------|-------------|
 | `status` | Worst block status: `"ok"`, `"partial"` (some nodes dropped or `unknown`) or `"failed"` (no usable code) |
-| `blocks[]` | Per block: `id`, `status`, `pythonCode`, `droppedNodes`, `unknownNodes`, and `failureReason` (`parse_error`, `incomplete_response`, `empty_response`, `http_error`, `timeout`) when failed |
+| `blocks[]` | Per block: `id`, `status`, `code`, `droppedNodes`, `unknownNodes` (including steps the target language cannot express), and `failureReason` (`parse_error`, `incomplete_response`, `empty_response`, `http_error`, `timeout`) when failed |
 | `diagnostics` / `diagnosticsDetailed` | Only with `includeDiagnostics: true`. Detailed entries are `{ blockId, line?, severity, code, message }` |
 
-A failed block contributes `# [block <id>: translation failed]` to `pythonCode` (`failedBlockMarker: false` disables it). Failures do not throw unless `throwOnFailure: true` and every block failed; the CLI and HTTP server set it so total failures stay errors (the server maps them to 502/504). See `CHANGELOG.md` for behaviour changes.
+`pythonCode` (on the result and on each block) is a deprecated alias of `code` that is only present when the target is Python.
+
+A failed block contributes a comment such as `# [block <id>: translation failed]` (`// …` in C) to `code` (`failedBlockMarker: false` disables it). Failures do not throw unless `throwOnFailure: true` and every block failed; the CLI and HTTP server set it so total failures stay errors (the server maps them to 502/504). See `CHANGELOG.md` for behaviour changes.
 
 ## Library
 
@@ -230,6 +241,29 @@ The model returns Python directly. Post-processing only strips markdown code fen
 Unsupported constructs become `# unsupported: …` comments unless `unsupportedBehavior` is `fallback` (whole block re-translated in direct mode).
 
 **Recommendation:** use AST mode for teaching fidelity; use direct mode for quick experiments or when the AST cannot represent a construct.
+
+## Target languages
+
+The AST is the language-neutral intermediate representation. In AST mode the model call is **identical for every target**; only the deterministic code generator differs (`src/targets/`). Direct mode uses a per-target prompt (`direct.v2` for Python, `direct.c.v1` for C) and a per-target syntax check (tree-sitter WASM).
+
+| | Python (`python`, default) | C (`c`) |
+|---|---|---|
+| Output | Python 3.10 statements | One C11 program: includes, helper functions, globals, functions, `int main(void)` |
+| Types | dynamic | inferred from the program (`src/semantics/`): whole numbers `int`, decimals `double`, text `const char *`, lists `NlListInt *` etc. |
+| `separateBlocks` | yes | no (one program has one `main`) |
+| Not expressible | – | `try`/`except`, `raise`, returning several values, unpacking, nested functions, values whose type cannot be inferred or changes (`TARGET_UNSUPPORTED`, `TYPE_CONFLICT`) |
+
+C conventions:
+
+- **Division:** `/` keeps true division, as the instructions say "divide": two `int`s are written `(double)a / b` (info diagnostic `INT_DIVISION`).
+- **Output:** `printf` with `%d` for whole numbers, `%g` for decimals (so `10.0` prints as `10`), `%s` for text; booleans print as `1`/`0`.
+- **Declarations** are placed where they read naturally: `int total = 0;` at the first assignment, `for (int i = …)` for loop-only variables, otherwise at the top of the function. Top-level variables used by functions become globals.
+- **Parameters** get their types from call sites; a function that is never called gets `int` parameters (warning `TYPE_ASSUMED`).
+- **Helpers:** strings, input and growable lists use small `nl_*` helper functions emitted above the program, only the ones actually used. Memory is never freed (the OS reclaims it at exit). Runtime errors (bad index, `int("abc")`) print `Error: …` and exit with status 1, like an uncaught Python exception.
+- **Names:** letters with diacritics are transliterated (`määrä` → `maara`), C keywords and library names get a `_` suffix, and the `nl_` prefix is reserved for helpers. Collisions are reported as `NAME_COLLISION`.
+- The output compiles warning-free with `cc -std=c11 -Wall -Wextra -pedantic` (add `-lm` when it uses `math.h`).
+
+Statements C cannot express are written as `// unsupported in C: <source line>` and make the block `partial`, so `unsupportedBehavior: "fallback"` hands such blocks to direct mode (model writes C).
 
 ## Natural language linter
 
@@ -318,6 +352,8 @@ Sample instruction files live in [`examples/`](examples/). Useful cases:
 |------|------|
 | `src/ast.ts` | AST types, validation, verify |
 | `src/codegen.ts` | AST → Python |
+| `src/targets/` | Target registry; `python/` and `c/` (C codegen, runtime helpers, identifiers, direct-mode post-processing) |
+| `src/semantics/` | Type inference and declaration placement for statically typed targets |
 | `src/llmConfig.ts` | Per-request LLM provider resolution |
 | `src/translator.ts` | API client, prompts, pipelines |
 | `src/linter.ts` | NL linter |
