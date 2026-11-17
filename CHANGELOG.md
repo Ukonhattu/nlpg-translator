@@ -1,0 +1,108 @@
+# Changelog
+
+## Unreleased
+
+### Behaviour changes
+
+- **Linter is advisory (Phase 8).** New `lintMode: "off" | "warn" | "block"`
+  (default `"off"`); `enableLint: true` maps to `"block"` for backward
+  compatibility. In `"warn"` mode findings are returned as `LINT_*` diagnostics
+  and `errors` stays empty. Rule fixes: ambiguous words are whole-word
+  (Unicode-aware, ignored inside quotes) so "ambiguous", "biggest", "Germany"
+  no longer match; conditions may compare against another variable ("greater
+  than the y"); `Print` is only checked at the start of a line or clause and
+  operation phrases ("the sum of x and y") are skipped; `Repeat` must start the
+  line and may be written "Repeat the following N times" without a colon.
+  The linter is English-only (D7). CLI `--lint-mode`, HTTP field `lintMode`.
+
+- **Direct mode stops repairing model output (Phase 7).**
+  - `strictOutputFidelity` no longer deletes `print` lines in direct mode (it
+    still drops ungrounded prints in AST mode). Instead a `DIRECT_EXTRA_PRINTS`
+    warning is recorded when the model emits more `print()` calls than the
+    source lines that ask for output. `removeUnrequestedPrints` is gone.
+  - The dead-ternary rewrite (`x if False else y`) is off by default (it also
+    rewrote text inside strings). Opt in with
+    `directPostProcess: { deadTernaries: true }`.
+  - Comment stripping is string-aware (quotes, triple quotes, escapes) and keeps
+    blank lines inside strings. `directPostProcess: "none"` returns the model
+    text with only code fences removed (recommended for research baselines).
+  - Generated direct-mode code is checked with a WASM parser
+    (`web-tree-sitter`, loaded lazily); a syntax error adds
+    `DIRECT_SYNTAX_ERROR` and makes the block `partial` without changing the
+    code (`directParseCheck: false` disables it). Note: the grammar is current
+    Python, so it accepts PEP 701 f-strings that Python 3.10 rejects.
+  - New direct prompt `direct.v2` with the same construct scope as the AST
+    prompt (functions allowed). `promptVersion: "v1"` reproduces earlier
+    results. Direct mode now defaults `reasoningEffort` to `"low"`, like AST
+    mode.
+  - To reproduce results from before the fixes: check out tag
+    `pre-fix-baseline` (commit `05640c9`).
+
+- **LLM failures no longer throw by default (Phase 3).** `translateProgram` now
+  reports an HTTP error, timeout, unparseable, incomplete or empty model
+  response as a *failed block* (`status: "failed"`, `blocks[].failureReason`)
+  instead of rejecting. Set `throwOnFailure: true` to get the old behaviour when
+  every block fails (the original error is rethrown). Configuration errors
+  (e.g. a missing API key) still throw.
+- **Failed blocks leave a marker.** `pythonCode` contains
+  `# [block <id>: translation failed]` for a failed block instead of silently
+  omitting it. Disable with `failedBlockMarker: false`.
+- **`extractResponseText` no longer returns a JSON dump.** It concatenates all
+  `output_text` parts of all messages, and throws `LlmResponseError`
+  (`incomplete_response` / `empty_response`) when there is no usable text or the
+  response is `incomplete`.
+- **Diagnostics are always collected internally.** `includeDiagnostics` only
+  controls whether they are returned. `verifyProgram` / `verifyStatements`
+  ignore `collectDiagnostics` (kept for compatibility).
+- **Identifiers keep their case** (Phase 2): `Score` and `score` are different
+  variables; Python keywords get a `_` suffix; non-identifier method, function,
+  exception and parameter names make the step invalid (dropped with a
+  diagnostic).
+- **Operator parentheses are minimal** (Phase 2): `(a + b) + c` is emitted as
+  `a + b + c`.
+- **HTTP server (Phase 1):** request-supplied `endpoint`, `model` and `llmApi`
+  are ignored; `HOST` defaults to `127.0.0.1` and a non-loopback `HOST`
+  requires `SERVER_AUTH_TOKEN`.
+
+### Additions
+
+- **Docker and hygiene (Phase 10).** Multi-stage `Dockerfile` (node:22-alpine,
+  `npm ci --omit=dev`, non-root `USER node`, `HEALTHCHECK`), `.dockerignore`,
+  unauthenticated `GET /healthz` (`{"ok":true}`), `.claude/` and `.env.*` in
+  `.gitignore`, and the four identical `case` arms in
+  `promoteOrphanPassIntoLoopBodies` collapsed into one.
+
+- **Tracing and reproducibility (Phase 9).** `trace` callback (`TraceRecord`
+  per LLM call and per block result), `traceIncludeInput` (default false, D8),
+  `requestId`; CLI `--trace` / `--trace-include-input`. Prompt registry
+  (`src/prompts/index.ts`) with SHA-256 per prompt and a test that fails when a
+  prompt changes without a new id. `PACKAGE_VERSION` is generated from
+  package.json by `scripts/gen-version.mjs` as part of `npm run build`. The HTTP
+  server passes its request id into the trace.
+
+- **Multi-sample consistency (Phase 6).** `samples` (1–7, AST mode),
+  `consistency` result field, `CONSISTENCY_DISAGREEMENT` / `SAMPLE_FAILED`
+  diagnostics, `src/consistency.ts`. `temperature` option (gateway only, only
+  when set; never sent to azure). `samples: 1` behaves exactly as before.
+  Vitest `testTimeout` raised to 30 s for the python-spawning tests.
+
+- **Evidence-based grounding, AST schema v2 (Phase 5).** `AST_SCHEMA_VERSION = 2`:
+  statements carry `evidence` and `print` carries `outputCue` (prompt
+  `ast.v2`, schema v2). New `grounding: "off" | "warn" | "strict"` option
+  (default `"warn"`, CLI `--grounding`) and `maxStatementsPerLine`; checks live
+  in `src/grounding.ts`, number words in `src/numberWords.ts`. Output gating no
+  longer relies only on the verb table when an `outputCue` is present. v1 ASTs
+  still verify. The `astMode` docs no longer claim a guarantee.
+
+- **Structured output for AST mode (Phase 4).** `structuredOutput: "auto" | "on" | "off"`
+  (default `"auto"`) sends the AST JSON Schema (`src/astSchema.ts`) as
+  `text.format` (`json_schema`, strict). In `auto`, a schema/format-related
+  400/422 triggers one retry without it and the endpoint is remembered as
+  unsupported for the process lifetime (diagnostic `STRUCTURED_OUTPUT_UNSUPPORTED`).
+  `null` placeholders for absent optional fields are removed before
+  verification. `parseJsonObject` remains as the fallback path.
+
+- `TranslationResult.blocks`, `status`, `diagnosticsDetailed` (structured
+  diagnostics with `blockId`, `line`, `severity`, `code`, `message`).
+- `TranslateOptions.throwOnFailure`, `failedBlockMarker`, `timeoutMs`.
+- Verification limits: statement nesting depth 32, expression depth 64.

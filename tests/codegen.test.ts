@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Stmt } from "../src/ast.js";
-import { generatePython } from "../src/codegen.js";
+import { generatePython as rawGeneratePython } from "../src/codegen.js";
+import { assertParses } from "./helpers/python.js";
+
+function generatePython(statements: Stmt[]): string {
+  const code = rawGeneratePython(statements);
+  assertParses(code);
+  return code;
+}
 
 function stmt(s: Omit<Stmt, "source"> & { source?: string }): Stmt {
   return { source: "", ...s } as Stmt;

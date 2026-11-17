@@ -2,6 +2,7 @@ import {
   promoteOrphanPassIntoLoopBodies,
   tryRecoverUnknownFromSource,
 } from "./astRecovery.js";
+import { isValidNormalizedIdentifier } from "./identifiers.js";
 import { lineRequestsOutput } from "./outputVerbs.js";
 
 /**
@@ -14,7 +15,7 @@ export type FStringPart =
   | { kind: "expr"; value: Expr };
 
 export type Expr =
-  | { kind: "num"; value: number }
+  | { kind: "num"; value: number; raw?: string }
   | { kind: "str"; value: string }
   | { kind: "bool"; value: boolean }
   | { kind: "var"; name: string }
@@ -40,7 +41,17 @@ export type ElifClause = { test: Expr; body: Stmt[] };
 
 export type ExceptHandler = { exc?: string; body: Stmt[] };
 
-export type Stmt =
+/** Version of the AST schema the model is asked to produce (v2 adds evidence/outputCue). */
+export const AST_SCHEMA_VERSION = 2;
+
+/**
+ * Statement nodes. Every statement may carry `evidence`: a verbatim substring of
+ * the cited source line that expresses the step (schema v2). Used only for
+ * grounding checks; it never affects generated code.
+ */
+export type Stmt = StmtNode & { evidence?: string };
+
+type StmtNode =
   | {
       kind: "assign";
       target?: string;
@@ -56,7 +67,7 @@ export type Stmt =
       source: string;
     }
   | { kind: "unpackassign"; targets: string[]; value: Expr; source: string }
-  | { kind: "print"; value: Expr; source: string }
+  | { kind: "print"; value: Expr; source: string; outputCue?: string }
   | {
       kind: "if";
       test: Expr;
@@ -154,17 +165,51 @@ const BINOPS = new Set(["+", "-", "*", "/", "%"]);
 const AUG_OPS = new Set(["+", "-", "*", "/"]);
 const CAST_TYPES = new Set(["int", "float", "str"]);
 
+export type VerifyDiagnostic = {
+  line?: number;
+  severity: "info" | "warning" | "error";
+  code: string;
+  message: string;
+};
+
 export type VerifyOptions = {
   /** When true, drop print nodes not grounded in output verbs on the cited line. */
   strictOutputFidelity?: boolean;
-  /** When true, record messages in diagnostics (default false). */
+  /**
+   * @deprecated Diagnostics are always collected; the translator decides whether
+   * to return them (`includeDiagnostics`). Kept so existing callers compile.
+   */
   collectDiagnostics?: boolean;
+  /** Internal: receives structured diagnostics alongside the string list. */
+  detailed?: VerifyDiagnostic[];
+  /** Internal: counts nodes dropped during verification. */
+  stats?: { dropped: number };
 };
 
 export type VerifyResult = {
   statements: Stmt[];
+  /** Human-readable messages (always collected). */
   diagnostics: string[];
+  diagnosticsDetailed: VerifyDiagnostic[];
+  /** Number of nodes dropped as invalid / ungrounded / too deep. */
+  droppedNodes: number;
 };
+
+/** Maximum statement nesting depth; deeper subtrees are dropped. */
+export const MAX_AST_DEPTH = 32;
+/** Maximum expression nesting depth. */
+const MAX_EXPR_DEPTH = 64;
+
+function report(
+  diagnostics: string[],
+  options: VerifyOptions,
+  d: Omit<VerifyDiagnostic, "severity"> & { severity?: VerifyDiagnostic["severity"] },
+  dropped = false
+): void {
+  diagnostics.push(d.message);
+  options.detailed?.push({ severity: "warning", ...d });
+  if (dropped && options.stats) options.stats.dropped++;
+}
 
 function isFstringPart(part: any): part is FStringPart {
   if (!part || typeof part !== "object") return false;
@@ -173,12 +218,25 @@ function isFstringPart(part: any): part is FStringPart {
   return false;
 }
 
+let exprDepth = 0;
+
 function isExpr(node: any): node is Expr {
   if (!node || typeof node !== "object" || !EXPR_KINDS.has(node.kind)) {
     return false;
   }
+  if (exprDepth >= MAX_EXPR_DEPTH) return false;
+  exprDepth++;
+  try {
+    return isExprShape(node);
+  } finally {
+    exprDepth--;
+  }
+}
+
+function isExprShape(node: any): boolean {
   switch (node.kind) {
     case "num":
+      if (typeof node.raw !== "string") delete node.raw;
       return typeof node.value === "number" && Number.isFinite(node.value);
     case "str":
       return typeof node.value === "string";
@@ -216,15 +274,13 @@ function isExpr(node: any): node is Expr {
       return Array.isArray(node.items) && node.items.every(isExpr);
     case "call":
       return (
-        typeof node.func === "string" &&
-        node.func.trim().length > 0 &&
+        isValidNormalizedIdentifier(node.func) &&
         Array.isArray(node.args) &&
         node.args.every(isExpr)
       );
     case "methodcall":
       return (
-        typeof node.method === "string" &&
-        node.method.trim().length > 0 &&
+        isValidNormalizedIdentifier(node.method) &&
         isExpr(node.target) &&
         Array.isArray(node.args) &&
         node.args.every(isExpr)
@@ -242,10 +298,18 @@ function isExpr(node: any): node is Expr {
   }
 }
 
+/** A subscript target such as `items[0]` (or a bare variable). */
+function isAssignableExpr(node: any): boolean {
+  if (!isExpr(node)) return false;
+  if (node.kind === "var") return true;
+  return node.kind === "index" && isAssignableExpr(node.target);
+}
+
 function isAssignTargetValid(node: any): boolean {
   const hasName =
     typeof node.target === "string" && node.target.trim().length > 0;
-  const hasExpr = node.targetExpr !== undefined && isExpr(node.targetExpr);
+  const hasExpr =
+    node.targetExpr !== undefined && isAssignableExpr(node.targetExpr);
   return hasName !== hasExpr;
 }
 
@@ -262,7 +326,9 @@ function isExceptHandler(handler: any): handler is ExceptHandler {
   return (
     handler &&
     typeof handler === "object" &&
-    (handler.exc === undefined || typeof handler.exc === "string") &&
+    (handler.exc === undefined ||
+      handler.exc === "" ||
+      isValidNormalizedIdentifier(handler.exc)) &&
     Array.isArray(handler.body)
   );
 }
@@ -272,6 +338,9 @@ function validateStmtShape(node: any): boolean {
     return false;
   }
   if (!Number.isInteger(node.line) || node.line < 1) return false;
+  // Optional grounding fields: ignore (drop) anything that is not a string.
+  if (node.evidence !== undefined && typeof node.evidence !== "string") delete node.evidence;
+  if (node.outputCue !== undefined && typeof node.outputCue !== "string") delete node.outputCue;
 
   switch (node.kind) {
     case "assign":
@@ -335,9 +404,7 @@ function validateStmtShape(node: any): boolean {
         typeof node.name === "string" &&
         node.name.trim().length > 0 &&
         Array.isArray(node.params) &&
-        node.params.every(
-          (p: unknown) => typeof p === "string" && (p as string).trim().length > 0
-        ) &&
+        node.params.every(isValidNormalizedIdentifier) &&
         (node.docstring === undefined || typeof node.docstring === "string") &&
         Array.isArray(node.body)
       );
@@ -350,8 +417,7 @@ function validateStmtShape(node: any): boolean {
       );
     case "raise":
       return (
-        typeof node.excType === "string" &&
-        node.excType.trim().length > 0 &&
+        isValidNormalizedIdentifier(node.excType) &&
         (node.message === undefined || isExpr(node.message))
       );
     case "try":
@@ -413,7 +479,8 @@ function verifyStmtBodies(
   sourceLines: string[],
   diagnostics: string[],
   where: string,
-  options: VerifyOptions
+  options: VerifyOptions,
+  depth: number
 ): void {
   switch (node.kind) {
     case "if":
@@ -422,7 +489,8 @@ function verifyStmtBodies(
         sourceLines,
         diagnostics,
         `${where}.body`,
-        options
+        options,
+        depth + 1
       );
       if (Array.isArray(node.elifs)) {
         node.elifs.forEach((clause: ElifClause, i: number) => {
@@ -431,7 +499,8 @@ function verifyStmtBodies(
             sourceLines,
             diagnostics,
             `${where}.elifs[${i}].body`,
-            options
+            options,
+            depth + 1
           );
         });
       }
@@ -440,7 +509,8 @@ function verifyStmtBodies(
         sourceLines,
         diagnostics,
         `${where}.orelse`,
-        options
+        options,
+        depth + 1
       );
       break;
     case "while":
@@ -452,7 +522,8 @@ function verifyStmtBodies(
         sourceLines,
         diagnostics,
         `${where}.body`,
-        options
+        options,
+        depth + 1
       );
       break;
     case "functiondef":
@@ -461,7 +532,8 @@ function verifyStmtBodies(
         sourceLines,
         diagnostics,
         `${where}.body`,
-        options
+        options,
+        depth + 1
       );
       break;
     case "try":
@@ -470,7 +542,8 @@ function verifyStmtBodies(
         sourceLines,
         diagnostics,
         `${where}.body`,
-        options
+        options,
+        depth + 1
       );
       node.handlers.forEach((handler: ExceptHandler, i: number) => {
         handler.body = verifyStatements(
@@ -478,7 +551,8 @@ function verifyStmtBodies(
           sourceLines,
           diagnostics,
           `${where}.handlers[${i}].body`,
-          options
+          options,
+          depth + 1
         );
       });
       break;
@@ -486,66 +560,165 @@ function verifyStmtBodies(
 }
 
 export function verifyStatements(
-  nodes: any[],
+  nodes: any,
   sourceLines: string[],
   diagnostics: string[],
   path = "program",
-  options: VerifyOptions = {}
+  options: VerifyOptions = {},
+  depth = 0
 ): Stmt[] {
   const result: Stmt[] = [];
-  const note = (message: string) => {
-    if (options.collectDiagnostics) diagnostics.push(message);
-  };
+  const say = (
+    code: string,
+    message: string,
+    line?: number,
+    severity: VerifyDiagnostic["severity"] = "warning",
+    dropped = false
+  ) => report(diagnostics, options, { code, message, line, severity }, dropped);
+
+  if (!Array.isArray(nodes)) {
+    say("BODY_NOT_ARRAY", `Expected a list of steps at ${path}; treated as empty.`);
+    return result;
+  }
+  if (depth > MAX_AST_DEPTH) {
+    say(
+      "DEPTH_LIMIT",
+      `Dropped ${nodes.length} step(s) at ${path}: nesting is deeper than ${MAX_AST_DEPTH}.`,
+      undefined,
+      "warning"
+    );
+    if (options.stats) options.stats.dropped += nodes.length;
+    return result;
+  }
+
+  const recoveredHeaders = new Set<any>();
 
   nodes.forEach((node, index) => {
     const where = `${path}[${index}]`;
 
+    if (!node || typeof node !== "object" || Array.isArray(node)) {
+      say("INVALID_STEP", `Skipped invalid step at ${where} (not an object).`, undefined, "warning", true);
+      return;
+    }
+
     if (node.kind === "unknown") {
       const recovered = tryRecoverUnknownFromSource(
-        sourceLines[(node.line ?? 1) - 1] ?? ""
+        sourceLines[(Number.isInteger(node.line) ? node.line : 1) - 1] ?? ""
       );
       if (recovered) {
-        node = { ...recovered, line: node.line };
+        const recoveredLine = sourceLines[(Number.isInteger(node.line) ? node.line : 1) - 1] ?? "";
+        node = { ...recovered, line: node.line, evidence: recoveredLine.trim() };
+        if (LOOP_KINDS.has(node.kind)) recoveredHeaders.add(node);
       }
     }
 
     if (!validateStmtShape(node)) {
-      note(`Skipped invalid step at ${where} (kind: ${node?.kind ?? "unknown"}).`);
+      say(
+        "INVALID_STEP",
+        `Skipped invalid step at ${where} (kind: ${node?.kind ?? "unknown"}).`,
+        Number.isInteger(node?.line) ? node.line : undefined,
+        "warning",
+        true
+      );
       return;
     }
 
     if (node.line > sourceLines.length) {
-      note(
-        `Skipped '${node.kind}' at ${where}: line ${node.line} is outside the input (${sourceLines.length} lines).`
+      say(
+        "LINE_OUT_OF_RANGE",
+        `Skipped '${node.kind}' at ${where}: line ${node.line} is outside the input (${sourceLines.length} lines).`,
+        node.line,
+        "warning",
+        true
       );
       return;
     }
     node.source = sourceLines[node.line - 1];
 
     if (node.kind === "pass" && node.source.trim().toLowerCase() !== "pass") {
-      note(
-        `Skipped 'pass' at ${where}: line ${node.line} is not a pass placeholder (got: ${JSON.stringify(node.source.trim())}).`
+      say(
+        "PASS_NOT_PLACEHOLDER",
+        `Skipped 'pass' at ${where}: line ${node.line} is not a pass placeholder (got: ${JSON.stringify(node.source.trim())}).`,
+        node.line,
+        "warning",
+        true
       );
       return;
     }
 
-    if (node.kind === "print" && !lineRequestsOutput(node.source)) {
+    // With an explicit `outputCue` the grounding step decides; the verb table is
+    // only the fallback for v1 ASTs (no cue).
+    const hasCue = typeof node.outputCue === "string" && node.outputCue.trim() !== "";
+    if (node.kind === "print" && !hasCue && !lineRequestsOutput(node.source)) {
       if (options.strictOutputFidelity) {
-        note(
-          `Line ${node.line}: omitted print (source line does not request output).`
+        say(
+          "PRINT_OMITTED",
+          `Line ${node.line}: omitted print (source line does not request output).`,
+          node.line,
+          "warning",
+          true
         );
         return;
       }
-      note(
-        `Line ${node.line}: print may not match source (no output verb on that line).`
+      say(
+        "PRINT_UNGROUNDED",
+        `Line ${node.line}: print may not match source (no output verb on that line).`,
+        node.line
       );
     }
 
-    verifyStmtBodies(node, sourceLines, diagnostics, where, options);
+    verifyStmtBodies(node, sourceLines, diagnostics, where, options, depth);
     result.push(node as Stmt);
   });
 
-  return result;
+  return reparentRecoveredLoopBodies(result, recoveredHeaders, (message, line) =>
+    say("RECOVERED_LOOP_BODY", message, line, "info")
+  );
+}
+
+const LOOP_KINDS = new Set(["for", "forin", "while", "repeat"]);
+
+function indentWidth(line: string): number {
+  const lead = /^[ \t]*/.exec(line)![0];
+  return lead.replace(/\t/g, "    ").length;
+}
+
+/**
+ * A loop header recovered from source text has an empty body. Move the
+ * following sibling statements that are indented deeper than the header
+ * (according to the original text) into that body.
+ */
+function reparentRecoveredLoopBodies(
+  statements: Stmt[],
+  recovered: Set<any>,
+  note: (message: string, line?: number) => void
+): Stmt[] {
+  if (recovered.size === 0) return statements;
+  const out: Stmt[] = [];
+  for (let i = 0; i < statements.length; i++) {
+    const stmt = statements[i] as any;
+    out.push(stmt);
+    if (!recovered.has(stmt) || (stmt.body?.length ?? 0) > 0) continue;
+    const headerIndent = indentWidth(stmt.source ?? "");
+    let j = i + 1;
+    while (
+      j < statements.length &&
+      statements[j].kind !== "unknown" &&
+      indentWidth((statements[j] as any).source ?? "") > headerIndent
+    ) {
+      j++;
+    }
+    if (j > i + 1) {
+      stmt.body = statements.slice(i + 1, j);
+      i = j - 1;
+    } else {
+      note(
+        `Recovered loop header at line ${stmt.line}; body could not be determined.`,
+        stmt.line
+      );
+    }
+  }
+  return out;
 }
 
 export function verifyProgram(
@@ -554,22 +727,20 @@ export function verifyProgram(
   options: VerifyOptions = {}
 ): VerifyResult {
   const diagnostics: string[] = [];
-  const note = (message: string) => {
-    if (options.collectDiagnostics) diagnostics.push(message);
-  };
+  const diagnosticsDetailed: VerifyDiagnostic[] = [];
+  const stats = { dropped: 0 };
+  const opts: VerifyOptions = { ...options, detailed: diagnosticsDetailed, stats };
   if (!raw || typeof raw !== "object" || !Array.isArray(raw.statements)) {
-    note("Model did not return a valid program object.");
-    return { statements: [], diagnostics };
+    report(diagnostics, opts, {
+      code: "INVALID_PROGRAM",
+      message: "Model did not return a valid program object.",
+      severity: "error",
+    });
+    return { statements: [], diagnostics, diagnosticsDetailed, droppedNodes: 0 };
   }
   const sourceLines = sourceText.split(/\r?\n/);
   const statements = promoteOrphanPassIntoLoopBodies(
-    verifyStatements(
-      raw.statements,
-      sourceLines,
-      diagnostics,
-      "program",
-      options
-    )
+    verifyStatements(raw.statements, sourceLines, diagnostics, "program", opts)
   );
-  return { statements, diagnostics };
+  return { statements, diagnostics, diagnosticsDetailed, droppedNodes: stats.dropped };
 }

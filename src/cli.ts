@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import fs from "fs";
 import path from "path";
-import { translateProgram, type Block, type LlmApi } from "./index.js";
+import { translateProgram, type Block, type LlmApi, type TraceRecord } from "./index.js";
 import { resolveLlmConfig } from "./llmConfig.js";
 
 function usage() {
   console.error(
-    "Usage: nlp2py <file> [--api azure|gateway] [--endpoint <url>] [--model <name>] [--lint] [--separate-blocks] [--ast] [--unsupported <comment|fallback>] [--reasoning <minimal|low|medium|high>] [--verbose] [--strict-output-fidelity]"
+    "Usage: nlp2py <file> [--api azure|gateway] [--endpoint <url>] [--model <name>] [--lint] [--lint-mode <off|warn|block>] [--separate-blocks] [--ast] [--unsupported <comment|fallback>] [--reasoning <minimal|low|medium|high>] [--verbose] [--strict-output-fidelity] [--grounding <off|warn|strict>] [--trace <file.jsonl>] [--trace-include-input]"
   );
 }
 
@@ -17,12 +17,16 @@ async function main() {
   let endpoint: string | undefined;
   let model: string | undefined;
   let enableLint = false;
+  let lintMode: "off" | "warn" | "block" | undefined;
   let separateBlocks = false;
   let astMode = false;
   let unsupportedBehavior: "comment" | "fallback" = "comment";
   let reasoningEffort: "minimal" | "low" | "medium" | "high" | undefined;
   let includeDiagnostics = false;
   let strictOutputFidelity = false;
+  let grounding: "off" | "warn" | "strict" | undefined;
+  let traceFile: string | undefined;
+  let traceIncludeInput = false;
   let endpointFlagProvided = false;
 
   for (let i = 0; i < args.length; i++) {
@@ -56,6 +60,17 @@ async function main() {
         process.exit(1);
       }
       model = args[i + 1];
+      i++;
+      continue;
+    }
+
+    if (arg === "--lint-mode") {
+      const value = args[i + 1];
+      if (value !== "off" && value !== "warn" && value !== "block") {
+        console.error("Error: --lint-mode requires one of 'off', 'warn', 'block'.");
+        process.exit(1);
+      }
+      lintMode = value;
       i++;
       continue;
     }
@@ -95,6 +110,33 @@ async function main() {
 
     if (arg === "--strict-output-fidelity") {
       strictOutputFidelity = true;
+      continue;
+    }
+
+    if (arg === "--trace") {
+      const value = args[i + 1];
+      if (!value || value.startsWith("--")) {
+        console.error("Error: --trace requires a file path (JSON Lines, appended).");
+        process.exit(1);
+      }
+      traceFile = value;
+      i++;
+      continue;
+    }
+
+    if (arg === "--trace-include-input") {
+      traceIncludeInput = true;
+      continue;
+    }
+
+    if (arg === "--grounding") {
+      const value = args[i + 1];
+      if (value !== "off" && value !== "warn" && value !== "strict") {
+        console.error("Error: --grounding requires one of 'off', 'warn', 'strict'.");
+        process.exit(1);
+      }
+      grounding = value;
+      i++;
       continue;
     }
 
@@ -168,12 +210,22 @@ async function main() {
     endpoint: resolved.endpoint,
     model: resolved.model,
     enableLint,
+    lintMode,
     separateBlocks,
     astMode,
     unsupportedBehavior,
     reasoningEffort,
     includeDiagnostics,
     strictOutputFidelity,
+    grounding,
+    throwOnFailure: true,
+    ...(traceFile
+      ? {
+          trace: (record: TraceRecord) =>
+            fs.appendFileSync(traceFile!, JSON.stringify(record) + "\n"),
+          traceIncludeInput,
+        }
+      : {}),
   });
 
   if (result.errors.length > 0) {

@@ -13,8 +13,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
       - run: npm ci
       - run: npm run build
       - run: npm test
@@ -22,16 +25,25 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
-    if: ${{ secrets.AALTO_API_KEY != '' }}
+    env:
+      HAS_KEY: ${{ secrets.AALTO_API_KEY != '' }}
     steps:
+      - name: Skip when no API key
+        if: env.HAS_KEY != 'true'
+        run: echo "AALTO_API_KEY not set; skipping integration tests"
       - uses: actions/checkout@v4
+        if: env.HAS_KEY == 'true'
       - uses: actions/setup-node@v4
+        if: env.HAS_KEY == 'true'
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
       - run: npm ci
+        if: env.HAS_KEY == 'true'
       - run: npm run build
+        if: env.HAS_KEY == 'true'
       - run: npm run test:integration
+        if: env.HAS_KEY == 'true'
         env:
           AALTO_API_KEY: ${{ secrets.AALTO_API_KEY }}
           AALTO_ENDPOINT: ${{ secrets.AALTO_ENDPOINT }}

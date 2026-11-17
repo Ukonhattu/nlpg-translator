@@ -1,105 +1,280 @@
 /**
  * Deterministic AST -> Python code generator (Aalto intro course constructs).
+ * Output targets Python 3.10 (no PEP 701 f-string nesting).
  */
 
 import type { Expr, FStringPart, Stmt } from "./ast.js";
+import {
+  SHADOWABLE_BUILTINS,
+  toPythonIdentifier,
+  type IdentifierRole,
+} from "./identifiers.js";
 
 const INDENT = "    ";
 
-function sanitizeIdentifier(name: string): string {
-  let id = name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  if (!id) id = "value";
-  if (/^[0-9]/.test(id)) id = `_${id}`;
-  return id;
+// --- emit context (diagnostics + identifier collision tracking) ---------------
+
+export type CodegenDiagnostic = {
+  severity: "info" | "warning";
+  code: string;
+  message: string;
+};
+
+type EmitContext = {
+  diagnostics: string[];
+  detailed?: CodegenDiagnostic[];
+  /** emitted identifier -> distinct source names that mapped to it */
+  names: Map<string, Set<string>>;
+  warnedBuiltins: Set<string>;
+};
+
+let ctx: EmitContext | null = null;
+
+function note(code: string, message: string): void {
+  if (ctx && !ctx.diagnostics.includes(message)) {
+    ctx.diagnostics.push(message);
+    ctx.detailed?.push({ severity: "warning", code, message });
+  }
 }
 
-function sanitizeFuncName(name: string): string {
-  const id = name.trim();
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
-    return sanitizeIdentifier(name);
+function ident(name: string, role: IdentifierRole, binding = false): string {
+  const id = toPythonIdentifier(name, role);
+  if (ctx) {
+    const source = name.trim().replace(/\s+/g, " ");
+    let seen = ctx.names.get(id);
+    if (!seen) ctx.names.set(id, (seen = new Set()));
+    if (!seen.has(source)) {
+      seen.add(source);
+      if (seen.size > 1) {
+        note(
+          "NAME_COLLISION",
+          `Names ${[...seen].map((s) => JSON.stringify(s)).join(" and ")} both map to the Python identifier '${id}'.`
+        );
+      }
+    }
+    if (binding && SHADOWABLE_BUILTINS.has(id) && !ctx.warnedBuiltins.has(id)) {
+      ctx.warnedBuiltins.add(id);
+      note(
+        "BUILTIN_SHADOWED",
+        `'${id}' is assigned or defined, which shadows the Python built-in of the same name.`
+      );
+    }
   }
   return id;
 }
+
+// --- literals -----------------------------------------------------------------
 
 function pyString(value: string): string {
   return JSON.stringify(value);
 }
 
-function needsParens(expr: Expr): boolean {
-  return (
-    expr.kind === "binop" ||
-    expr.kind === "compare" ||
-    expr.kind === "boolop" ||
-    expr.kind === "not" ||
-    expr.kind === "contains" ||
-    expr.kind === "cast" ||
-    expr.kind === "call" ||
-    expr.kind === "methodcall"
-  );
-}
+const RAW_FLOAT = /^-?\d+\.\d+([eE][+-]?\d+)?$/;
+const RAW_INT_OR_EXP = /^-?(0|[1-9]\d*)([eE][+-]?\d+)?$/;
 
-function emitOperand(expr: Expr): string {
-  const code = emitExpr(expr);
-  return needsParens(expr) ? `(${code})` : code;
-}
-
-function emitFstringPart(part: FStringPart): string {
-  if (part.kind === "lit") {
-    return part.value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\{/g, "{{").replace(/\}/g, "}}");
+function emitNumber(expr: Extract<Expr, { kind: "num" }>): string {
+  const raw = expr.raw;
+  if (
+    typeof raw === "string" &&
+    (RAW_FLOAT.test(raw) || RAW_INT_OR_EXP.test(raw)) &&
+    Number(raw) === expr.value
+  ) {
+    return raw;
   }
-  return `{${emitExpr(part.value)}}`;
+  return String(expr.value);
+}
+
+function isNegativeNumber(expr: Expr): boolean {
+  return expr.kind === "num" && emitNumber(expr).startsWith("-");
+}
+
+// --- precedence ---------------------------------------------------------------
+
+const P_OR = 1;
+const P_AND = 2;
+const P_NOT = 3;
+const P_CMP = 4;
+const P_ADD = 6;
+const P_MUL = 7;
+const P_UNARY = 8;
+const P_PRIMARY = 10;
+
+type Emitted = { code: string; prec: number };
+
+/** Signals that an expression cannot be written inside a Python 3.10 f-string. */
+class FStringUnsafe extends Error {}
+
+type ExprCtx = { inFstring: boolean };
+const TOP: ExprCtx = { inFstring: false };
+
+function wrap(e: Emitted, minPrec: number): string {
+  return e.prec < minPrec ? `(${e.code})` : e.code;
+}
+
+function emitBinopOperands(
+  op: string,
+  left: Expr,
+  right: Expr,
+  c: ExprCtx
+): string {
+  const prec = op === "+" || op === "-" ? P_ADD : P_MUL;
+  const l = emit(left, c);
+  const r = emit(right, c);
+  const leftCode = wrap(l, prec);
+  // Right operand: equal precedence needs parentheses unless it is the very
+  // same associative operator (a + (b + c), a * (b * c)).
+  const sameAssoc =
+    (op === "+" || op === "*") &&
+    right.kind === "binop" &&
+    right.op === op;
+  let rightCode: string;
+  if (op === "-" && isNegativeNumber(right)) {
+    rightCode = `(${r.code})`;
+  } else {
+    rightCode = wrap(r, sameAssoc ? prec : prec + 1);
+  }
+  return `${leftCode} ${op} ${rightCode}`;
+}
+
+function emitString(value: string, c: ExprCtx): string {
+  if (!c.inFstring) return pyString(value);
+  // Inside an f"..." expression (Python < 3.12) we may not use `"`, backslashes,
+  // newlines or braces. Use single quotes when that is possible.
+  // eslint-disable-next-line no-control-regex
+  if (/["'\\\n\r{}#]/.test(value) || /[\u0000-\u001f]/.test(value)) {
+    throw new FStringUnsafe();
+  }
+  return `'${value}'`;
+}
+
+function emitFstring(parts: FStringPart[], c: ExprCtx): Emitted {
+  if (c.inFstring) throw new FStringUnsafe();
+  try {
+    const body = parts
+      .map((part) => {
+        if (part.kind === "lit") return escapeFstringLiteral(part.value);
+        return `{${emit(part.value, { inFstring: true }).code}}`;
+      })
+      .join("");
+    return { code: `f"${body}"`, prec: P_PRIMARY };
+  } catch (err) {
+    if (!(err instanceof FStringUnsafe)) throw err;
+  }
+  note(
+    "FSTRING_FALLBACK",
+    "An f-string contained text that Python 3.10 cannot express inside {...}; it was written as string concatenation instead."
+  );
+  const pieces = parts.map((part) =>
+    part.kind === "lit"
+      ? pyString(part.value)
+      : `str(${emit(part.value, TOP).code})`
+  );
+  return {
+    code: pieces.length > 0 ? pieces.join(" + ") : '""',
+    prec: pieces.length > 1 ? P_ADD : P_PRIMARY,
+  };
+}
+
+function escapeFstringLiteral(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r")
+    .replace(/\t/g, "\\t")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f]/g, (ch) => `\\x${ch.charCodeAt(0).toString(16).padStart(2, "0")}`)
+    .replace(/\{/g, "{{")
+    .replace(/\}/g, "}}");
+}
+
+function emit(expr: Expr, c: ExprCtx): Emitted {
+  switch (expr.kind) {
+    case "num": {
+      const code = emitNumber(expr);
+      return { code, prec: code.startsWith("-") ? P_UNARY : P_PRIMARY };
+    }
+    case "str":
+      return { code: emitString(expr.value, c), prec: P_PRIMARY };
+    case "bool":
+      return { code: expr.value ? "True" : "False", prec: P_PRIMARY };
+    case "var":
+      return { code: ident(expr.name, "var"), prec: P_PRIMARY };
+    case "binop":
+      return {
+        code: emitBinopOperands(expr.op, expr.left, expr.right, c),
+        prec: expr.op === "+" || expr.op === "-" ? P_ADD : P_MUL,
+      };
+    case "compare":
+    case "contains": {
+      const op = expr.kind === "compare" ? expr.op : "in";
+      // Comparisons chain in Python, so a comparison operand is always wrapped.
+      const l = wrap(emit(expr.left, c), P_CMP + 1);
+      const r = wrap(emit(expr.right, c), P_CMP + 1);
+      return { code: `${l} ${op} ${r}`, prec: P_CMP };
+    }
+    case "boolop": {
+      const prec = expr.op === "or" ? P_OR : P_AND;
+      const code = expr.values
+        .map((v) => wrap(emit(v, c), prec))
+        .join(` ${expr.op} `);
+      return { code, prec };
+    }
+    case "not":
+      return {
+        code: `not ${wrap(emit(expr.value, c), P_NOT)}`,
+        prec: P_NOT,
+      };
+    case "index":
+      return {
+        code: `${wrap(emit(expr.target, c), P_PRIMARY)}[${emit(expr.index, c).code}]`,
+        prec: P_PRIMARY,
+      };
+    case "input": {
+      const promptCode = expr.prompt ? emit(expr.prompt, c).code : "";
+      const call = `input(${promptCode})`;
+      return { code: expr.cast ? `${expr.cast}(${call})` : call, prec: P_PRIMARY };
+    }
+    case "cast":
+      return {
+        code: `${expr.type}(${emit(expr.value, c).code})`,
+        prec: P_PRIMARY,
+      };
+    case "list":
+      return {
+        code: `[${expr.items.map((i) => emit(i, c).code).join(", ")}]`,
+        prec: P_PRIMARY,
+      };
+    case "call":
+      return {
+        code: `${ident(expr.func, "func")}(${expr.args.map((a) => emit(a, c).code).join(", ")})`,
+        prec: P_PRIMARY,
+      };
+    case "methodcall": {
+      // `5.upper()` is a syntax error, so literal numbers are always wrapped.
+      const target =
+        expr.target.kind === "num"
+          ? `(${emit(expr.target, c).code})`
+          : wrap(emit(expr.target, c), P_PRIMARY);
+      return {
+        code: `${target}.${toPythonIdentifier(expr.method, "attr")}(${expr.args.map((a) => emit(a, c).code).join(", ")})`,
+        prec: P_PRIMARY,
+      };
+    }
+    case "fstring":
+      return emitFstring(expr.parts, c);
+  }
 }
 
 export function emitExpr(expr: Expr): string {
-  switch (expr.kind) {
-    case "num":
-      return String(expr.value);
-    case "str":
-      return pyString(expr.value);
-    case "bool":
-      return expr.value ? "True" : "False";
-    case "var":
-      return sanitizeIdentifier(expr.name);
-    case "binop":
-      return `${emitOperand(expr.left)} ${expr.op} ${emitOperand(expr.right)}`;
-    case "compare":
-      return `${emitOperand(expr.left)} ${expr.op} ${emitOperand(expr.right)}`;
-    case "boolop":
-      return expr.values.map(emitOperand).join(` ${expr.op} `);
-    case "not":
-      return `not ${emitOperand(expr.value)}`;
-    case "index":
-      return `${emitOperand(expr.target)}[${emitExpr(expr.index)}]`;
-    case "input": {
-      const promptCode = expr.prompt ? emitExpr(expr.prompt) : "";
-      const call = `input(${promptCode})`;
-      return expr.cast ? `${expr.cast}(${call})` : call;
-    }
-    case "cast":
-      return `${expr.type}(${emitOperand(expr.value)})`;
-    case "list":
-      return `[${expr.items.map(emitExpr).join(", ")}]`;
-    case "call":
-      return `${sanitizeFuncName(expr.func)}(${expr.args.map(emitExpr).join(", ")})`;
-    case "methodcall": {
-      const args =
-        expr.args.length > 0 ? `(${expr.args.map(emitExpr).join(", ")})` : "()";
-      return `${emitOperand(expr.target)}.${expr.method}${args}`;
-    }
-    case "fstring":
-      return `f"${expr.parts.map(emitFstringPart).join("")}"`;
-    case "contains":
-      return `${emitOperand(expr.left)} in ${emitOperand(expr.right)}`;
-  }
+  return emit(expr, TOP).code;
 }
+
+// --- statements ---------------------------------------------------------------
 
 function emitAssignTarget(stmt: Extract<Stmt, { kind: "assign" }>): string {
   if (stmt.targetExpr) return emitExpr(stmt.targetExpr);
-  return sanitizeIdentifier(stmt.target!);
+  return ident(stmt.target!, "var", true);
 }
 
 function emitBody(body: Stmt[], indent: string): string[] {
@@ -111,17 +286,31 @@ function emitBody(body: Stmt[], indent: string): string[] {
   return lines;
 }
 
+function emitDocstring(text: string, indent: string): string {
+  const escaped = text
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\r\n|\r|\n/g, `\n${indent}`);
+  return `${indent}"""${escaped}"""`;
+}
+
 export function emitStmt(stmt: Stmt, indent = ""): string[] {
   switch (stmt.kind) {
     case "assign":
       return [`${indent}${emitAssignTarget(stmt)} = ${emitExpr(stmt.value)}`];
     case "unpackassign": {
-      const targets = stmt.targets.map(sanitizeIdentifier).join(", ");
+      const targets = stmt.targets.map((t) => ident(t, "var", true)).join(", ");
       return [`${indent}${targets} = ${emitExpr(stmt.value)}`];
     }
     case "augassign": {
-      const id = sanitizeIdentifier(stmt.target);
-      return [`${indent}${id} = ${id} ${stmt.op} ${emitOperand(stmt.value)}`];
+      const id = ident(stmt.target, "var");
+      const rhs = emitBinopOperands(
+        stmt.op,
+        { kind: "var", name: stmt.target },
+        stmt.value,
+        TOP
+      );
+      return [`${indent}${id} = ${rhs}`];
     }
     case "print":
       return [`${indent}print(${emitExpr(stmt.value)})`];
@@ -149,7 +338,7 @@ export function emitStmt(stmt: Stmt, indent = ""): string[] {
       return lines;
     }
     case "for": {
-      const loopVar = sanitizeIdentifier(stmt.loopVar);
+      const loopVar = ident(stmt.loopVar, "var", true);
       const args = [emitExpr(stmt.start), emitExpr(stmt.stop)];
       if (stmt.step) args.push(emitExpr(stmt.step));
       const lines = [`${indent}for ${loopVar} in range(${args.join(", ")}):`];
@@ -157,7 +346,7 @@ export function emitStmt(stmt: Stmt, indent = ""): string[] {
       return lines;
     }
     case "forin": {
-      const loopVar = sanitizeIdentifier(stmt.loopVar);
+      const loopVar = ident(stmt.loopVar, "var", true);
       const lines = [`${indent}for ${loopVar} in ${emitExpr(stmt.iterable)}:`];
       lines.push(...emitBody(stmt.body, indent));
       return lines;
@@ -168,13 +357,14 @@ export function emitStmt(stmt: Stmt, indent = ""): string[] {
       return [`${indent}pass`];
     case "append":
       return [
-        `${indent}${sanitizeIdentifier(stmt.target)}.append(${emitExpr(stmt.value)})`,
+        `${indent}${ident(stmt.target, "var")}.append(${emitExpr(stmt.value)})`,
       ];
     case "functiondef": {
-      const params = stmt.params.map(sanitizeIdentifier).join(", ");
-      const lines = [`${indent}def ${sanitizeIdentifier(stmt.name)}(${params}):`];
+      const name = ident(stmt.name, "func", true);
+      const params = stmt.params.map((p) => ident(p, "param", true)).join(", ");
+      const lines = [`${indent}def ${name}(${params}):`];
       if (stmt.docstring) {
-        lines.push(`${indent}${INDENT}"""${stmt.docstring}"""`);
+        lines.push(emitDocstring(stmt.docstring, indent + INDENT));
       }
       lines.push(...emitBody(stmt.body, indent));
       return lines;
@@ -188,13 +378,15 @@ export function emitStmt(stmt: Stmt, indent = ""): string[] {
     }
     case "raise": {
       const msg = stmt.message ? `(${emitExpr(stmt.message)})` : "()";
-      return [`${indent}raise ${sanitizeFuncName(stmt.excType)}${msg}`];
+      return [`${indent}raise ${toPythonIdentifier(stmt.excType, "exception")}${msg}`];
     }
     case "try": {
       const lines = [`${indent}try:`];
       lines.push(...emitBody(stmt.body, indent));
       for (const handler of stmt.handlers) {
-        const exc = handler.exc ? ` ${handler.exc}` : "";
+        const exc = handler.exc?.trim()
+          ? ` ${toPythonIdentifier(handler.exc, "exception")}`
+          : "";
         lines.push(`${indent}except${exc}:`);
         lines.push(...emitBody(handler.body, indent));
       }
@@ -209,6 +401,20 @@ export function emitStmt(stmt: Stmt, indent = ""): string[] {
   }
 }
 
-export function generatePython(statements: Stmt[]): string {
-  return statements.flatMap((stmt) => emitStmt(stmt, "")).join("\n").trim();
+/**
+ * Generate Python for verified statements. Notices (shadowed builtins, name
+ * collisions, f-string fallbacks) are appended to `diagnostics` when given.
+ */
+export function generatePython(
+  statements: Stmt[],
+  diagnostics: string[] = [],
+  detailed?: CodegenDiagnostic[]
+): string {
+  const previous = ctx;
+  ctx = { diagnostics, detailed, names: new Map(), warnedBuiltins: new Set() };
+  try {
+    return statements.flatMap((stmt) => emitStmt(stmt, "")).join("\n").trim();
+  } finally {
+    ctx = previous;
+  }
 }

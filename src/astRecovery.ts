@@ -1,9 +1,10 @@
 import type { Expr, Stmt } from "./ast.js";
+import { toPythonIdentifier } from "./identifiers.js";
 
 const LOOP_STMT_KINDS = new Set(["forin", "for", "while", "repeat"]);
 
 function slugToVar(name: string): string {
-  return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  return toPythonIdentifier(name, "var");
 }
 
 function varExpr(name: string): Expr {
@@ -84,20 +85,8 @@ export function promoteOrphanPassIntoLoopBodies(statements: Stmt[]): Stmt[] {
     const next = statements[i + 1];
 
     if (loopHasEmptyBody(stmt) && next?.kind === "pass") {
-      switch (stmt.kind) {
-        case "forin":
-          out.push({ ...stmt, body: [next] });
-          break;
-        case "for":
-          out.push({ ...stmt, body: [next] });
-          break;
-        case "while":
-          out.push({ ...stmt, body: [next] });
-          break;
-        case "repeat":
-          out.push({ ...stmt, body: [next] });
-          break;
-      }
+      // loopHasEmptyBody guarantees a for/forin/while/repeat node here.
+      out.push({ ...stmt, body: [next] } as Stmt);
       i++;
       continue;
     }
