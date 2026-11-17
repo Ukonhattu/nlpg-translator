@@ -4,6 +4,17 @@
 
 ### Behaviour changes
 
+- **Linter is advisory (Phase 8).** New `lintMode: "off" | "warn" | "block"`
+  (default `"off"`); `enableLint: true` maps to `"block"` for backward
+  compatibility. In `"warn"` mode findings are returned as `LINT_*` diagnostics
+  and `errors` stays empty. Rule fixes: ambiguous words are whole-word
+  (Unicode-aware, ignored inside quotes) so "ambiguous", "biggest", "Germany"
+  no longer match; conditions may compare against another variable ("greater
+  than the y"); `Print` is only checked at the start of a line or clause and
+  operation phrases ("the sum of x and y") are skipped; `Repeat` must start the
+  line and may be written "Repeat the following N times" without a colon.
+  The linter is English-only (D7). CLI `--lint-mode`, HTTP field `lintMode`.
+
 - **Direct mode stops repairing model output (Phase 7).**
   - `strictOutputFidelity` no longer deletes `print` lines in direct mode (it
     still drops ungrounded prints in AST mode). Instead a `DIRECT_EXTRA_PRINTS`

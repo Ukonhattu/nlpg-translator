@@ -1,7 +1,21 @@
+/**
+ * Rule-based linter for step-by-step instructions.
+ *
+ * ENGLISH ONLY (Finnish instructions are not linted; see FIX_PLAN D7). The
+ * linter is advisory: use `lintMode: "warn"` to surface its findings as
+ * diagnostics without blocking translation, or `"block"` to refuse to translate
+ * when it reports errors.
+ */
+
 import { toPythonIdentifier } from "./identifiers.js";
 import type { Block, LintError } from "./index.js";
 
 const ambiguousWords = ["big", "small", "huge", "many", "few"];
+
+/** Whole-word (Unicode-aware) matchers: "ambiguous", "biggest", "Germany" do not match. */
+const ambiguousRegexes = ambiguousWords.map(
+  (w) => new RegExp(`(?<![\\p{L}\\p{N}_])${w}(?![\\p{L}\\p{N}_])`, "iu")
+);
 
 const assignmentPrefixes = [
   /^\s*make a program that/i,
@@ -9,40 +23,14 @@ const assignmentPrefixes = [
   /^\s*create a program that/i,
 ];
 
+/** Text inside double quotes is data, not instruction wording. */
+function withoutQuotedText(line: string): string {
+  return line.replace(/"[^"]*"/g, '""');
+}
+
 function hasAmbiguousWord(line: string): boolean {
-  const lower = line.toLowerCase();
-  return ambiguousWords.some((w) => lower.includes(w));
-}
-
-function extractAssignedVariables(line: string): string[] {
-  const vars: string[] = [];
-  const letMatch = line.match(/^\s*let the (.+?) be /i);
-  if (letMatch) {
-    vars.push(slugToVar(letMatch[1]));
-  }
-  const setMatch = line.match(/^\s*set the (.+?) to /i);
-  if (setMatch) {
-    vars.push(slugToVar(setMatch[1]));
-  }
-  return vars;
-}
-
-function extractUsedVariables(line: string): string[] {
-  const vars: string[] = [];
-  // "Add 1 to the score", "Subtract 3 from the counter", "Print the score"
-  const addMatch = line.match(/add [^\n]+ to the (.+?)\.?$/i);
-  if (addMatch) vars.push(slugToVar(addMatch[1]));
-  const subMatch = line.match(/subtract [^\n]+ from the (.+?)\.?$/i);
-  if (subMatch) vars.push(slugToVar(subMatch[1]));
-  const printMatch = line.match(/print (?:the )?(.+?)\.?$/i);
-  if (printMatch && !printMatch[1].startsWith("\"")) {
-    vars.push(slugToVar(printMatch[1]));
-  }
-  const condMatch = line.match(/if the (.+?) is /i);
-  if (condMatch) vars.push(slugToVar(condMatch[1]));
-  const whileMatch = line.match(/while the (.+?) is /i);
-  if (whileMatch) vars.push(slugToVar(whileMatch[1]));
-  return vars;
+  const text = withoutQuotedText(line);
+  return ambiguousRegexes.some((re) => re.test(text));
 }
 
 // The linter matches names case-insensitively, so it lowercases the shared policy's output.
@@ -50,21 +38,76 @@ function slugToVar(name: string): string {
   return toPythonIdentifier(name, "var").toLowerCase();
 }
 
+function extractAssignedVariables(line: string): string[] {
+  const vars: string[] = [];
+  const letMatch = line.match(/^\s*let (?:the )?(.+?) be /i);
+  if (letMatch) vars.push(slugToVar(letMatch[1]));
+  const setMatch = line.match(/^\s*set (?:the )?(.+?) to /i);
+  if (setMatch) vars.push(slugToVar(setMatch[1]));
+  return vars;
+}
+
+/** Start of a line or of a clause ("If x is 1, print the score."). */
+const CLAUSE_START = String.raw`(?:^|[.,;:]\s*)`;
+
+/** A phrase naming an operation ("the sum of x and y") is an expression, not a variable. */
+const OPERATION_WORDS =
+  /(?<![\p{L}\p{N}_])(?:sum|difference|product|quotient|plus|minus|times|multiplied|divided)(?![\p{L}\p{N}_])/iu;
+
+/** Words that show a phrase is more than a bare variable name. */
+const NOT_A_PLAIN_NAME =
+  /(?<![\p{L}\p{N}_])(?:of|on|in|with|for|from|by|at|to|then|if|else|is|are)(?![\p{L}\p{N}_])/iu;
+
+function plainVariable(phrase: string): string | null {
+  const trimmed = phrase.trim().replace(/[.!?]+$/, "").trim();
+  if (!trimmed || trimmed.startsWith('"')) return null;
+  const name = trimmed.replace(/^the\s+/i, "");
+  if (!name || NOT_A_PLAIN_NAME.test(name)) return null;
+  if (!/^[\p{L}_][\p{L}\p{N}_ -]*$/u.test(name)) return null;
+  return slugToVar(name);
+}
+
+function extractUsedVariables(line: string): string[] {
+  const vars: string[] = [];
+  const push = (phrase: string) => {
+    const v = plainVariable(phrase);
+    if (v) vars.push(v);
+  };
+
+  // "Add 1 to the score", "Subtract 3 from the counter"
+  const addMatch = line.match(new RegExp(`${CLAUSE_START}add\\s+[^\\n]+?\\s+to\\s+the\\s+(.+?)\\s*\\.?$`, "i"));
+  if (addMatch) push(addMatch[1]);
+  const subMatch = line.match(new RegExp(`${CLAUSE_START}subtract\\s+[^\\n]+?\\s+from\\s+the\\s+(.+?)\\s*\\.?$`, "i"));
+  if (subMatch) push(subMatch[1]);
+
+  // "Print the score." (only at the start of a line or clause); a phrase naming
+  // an operation ("the sum of x and y") is not a variable and is skipped.
+  const printMatch = line.match(new RegExp(`${CLAUSE_START}print\\s+(.+?)\\s*\\.?$`, "i"));
+  if (printMatch && !OPERATION_WORDS.test(printMatch[1])) {
+    for (const part of printMatch[1].split(/\s*,\s*|\s+and\s+/i)) push(part);
+  }
+
+  const condMatch = line.match(new RegExp(`${CLAUSE_START}if the (.+?) is `, "i"));
+  if (condMatch) push(condMatch[1]);
+  const whileMatch = line.match(/^\s*while the (.+?) is /i);
+  if (whileMatch) push(whileMatch[1]);
+  return vars;
+}
+
+const OPERAND = String.raw`(?:-?\d+(?:[.,]\d+)?|(?:the\s+)?[\p{L}_][\p{L}\p{N}_]*)`;
+const COMPARISON = new RegExp(
+  String.raw`(?:greater than(?: or equal to)?|less than(?: or equal to)?|more than|fewer than|equal to|at least|at most)\s+${OPERAND}`,
+  "iu"
+);
+
 function isAllowedCondition(line: string): boolean {
   const lower = line.toLowerCase();
 
-  // 1) Numeric comparisons: "score is greater than 10", etc.
-  if (/(greater than|less than|equal to|at least|at most)\s+\d+/.test(lower)) {
-    return true;
-  }
+  // 1) Comparisons against a number or another variable:
+  //    "score is greater than 10", "x is greater than the y"
+  if (COMPARISON.test(lower)) return true;
 
   // 2) Equality / inequality between variables.
-  // Examples we support:
-  // - if A and B are the same, ...
-  // - if A and B are not the same, ...
-  // - if A is equal to B, ...
-  // - if A is not equal to B, ...
-
   // a) "X and Y are (not) the same"
   if (/\b(.+?)\s+and\s+(.+?)\s+are\s+(not\s+)?the\s+same\b/.test(lower)) {
     return true;
@@ -77,6 +120,9 @@ function isAllowedCondition(line: string): boolean {
 
   return false;
 }
+
+/** "Repeat 3 times:", "Repeat the following 3 times" (colon optional). */
+const VALID_REPEAT = /^\s*repeat\s+(?:the\s+following\s+)?(\d+)\s+times\b/i;
 
 export function lintProgram(blocks: Block[]): LintError[] {
   const errors: LintError[] = [];
@@ -133,15 +179,14 @@ export function lintProgram(blocks: Block[]): LintError[] {
             blockId: block.id,
             code: "INVALID_CONDITION",
             message:
-              "This condition is not in a supported form. Use explicit numeric comparisons (greater than / less than / equal to / at least / at most <number>) or clear equality/inequality between variables (e.g. 'A and B are the same').",
+              "This condition is not in a supported form. Use explicit comparisons (greater than / less than / equal to / at least / at most a number or another variable) or clear equality/inequality between variables (e.g. 'A and B are the same').",
             location: { line: lineNo },
           });
         }
       }
 
-      // Simple loop check: "Repeat N times:"
-      const repeatMatch = line.match(/repeat (\d+) times:/i);
-      if (/repeat /i.test(line) && !repeatMatch) {
+      // Loop check: a line that starts with "Repeat" needs a concrete count.
+      if (/^\s*repeat\b/i.test(line) && !VALID_REPEAT.test(line)) {
         errors.push({
           blockId: block.id,
           code: "INVALID_LOOP",

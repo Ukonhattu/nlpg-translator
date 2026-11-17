@@ -103,6 +103,7 @@ function tokensEqual(a: string, b: string): boolean {
 
 const REASONING = new Set(["minimal", "low", "medium", "high"]);
 const UNSUPPORTED = new Set(["comment", "fallback"]);
+const LINT_MODES = new Set(["off", "warn", "block"]);
 const BOOLEAN_FIELDS = [
   "enableLint",
   "separateBlocks",
@@ -150,6 +151,9 @@ function validateBody(body: any, cfg: ServerConfig): { blocks: Block[] } {
   }
   if (body.unsupportedBehavior !== undefined && !UNSUPPORTED.has(body.unsupportedBehavior)) {
     throw new BadRequest('unsupportedBehavior must be "comment" or "fallback"');
+  }
+  if (body.lintMode !== undefined && !LINT_MODES.has(body.lintMode)) {
+    throw new BadRequest('lintMode must be "off", "warn" or "block"');
   }
   if (body.modelProfile !== undefined && typeof body.modelProfile !== "string") {
     throw new BadRequest("modelProfile must be a string");
@@ -223,6 +227,7 @@ export function createApp(env: NodeJS.ProcessEnv = process.env) {
         timeoutMs: cfg.timeoutMs,
         throwOnFailure: true,
         enableLint: body.enableLint,
+        lintMode: body.lintMode,
         separateBlocks: body.separateBlocks,
         astMode: body.astMode,
         unsupportedBehavior: body.unsupportedBehavior,

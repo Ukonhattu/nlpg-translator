@@ -208,3 +208,16 @@ describe("server: upstream errors", () => {
     expect(JSON.stringify(res.body)).not.toContain("hunter2");
   });
 });
+
+describe("server: lintMode", () => {
+  it("rejects an invalid lintMode and passes a valid one", async () => {
+    const app = createApp(baseEnv);
+    await request(app).post("/translate").send({ ...body, lintMode: "strict" }).expect(400);
+    const r = await request(app)
+      .post("/translate")
+      .send({ blocks: [{ id: "b", text: "Print the score." }], lintMode: "block" });
+    expect(r.status).toBe(200);
+    expect(r.body.errors[0].code).toBe("UNDEFINED_VARIABLE");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+});

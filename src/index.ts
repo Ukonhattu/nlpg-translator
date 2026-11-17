@@ -110,7 +110,17 @@ export type TranslateOptions = {
   failedBlockMarker?: boolean;
   /** Timeout for each LLM HTTP request in milliseconds (default 60000). */
   timeoutMs?: number;
+  /**
+   * @deprecated Use `lintMode`. `enableLint: true` means `lintMode: "block"`.
+   */
   enableLint?: boolean;
+  /**
+   * English-only instruction linter. "off" (default); "warn": findings are added
+   * to `diagnostics` (always returned, since they are meant for the author of the
+   * instructions) and translation proceeds; "block": errors are returned in
+   * `errors` and nothing is translated.
+   */
+  lintMode?: "off" | "warn" | "block";
   separateBlocks?: boolean;
   /**
    * When true, the model transcribes the instructions into an AST (schema v2,
@@ -211,17 +221,21 @@ import {
   validateSamples,
 } from "./translator.js";
 
+/** Resolves `lintMode`, mapping the legacy `enableLint: true` to "block". */
+export function resolveLintMode(options: TranslateOptions): "off" | "warn" | "block" {
+  return options.lintMode ?? (options.enableLint ? "block" : "off");
+}
+
 export async function translateProgram(
   blocks: Block[],
   options: TranslateOptions
 ): Promise<TranslationResult> {
   validateSamples(options.samples);
 
-  if (options.enableLint) {
-    const errors = lintProgram(blocks);
-    if (errors.length > 0) {
-      return { pythonCode: "", errors };
-    }
+  const lintMode = resolveLintMode(options);
+  const lintErrors = lintMode === "off" ? [] : lintProgram(blocks);
+  if (lintMode === "block" && lintErrors.length > 0) {
+    return { pythonCode: "", errors: lintErrors };
   }
 
   const outcome = options.astMode
@@ -235,9 +249,27 @@ export async function translateProgram(
     status: outcome.status,
     ...(outcome.consistency ? { consistency: outcome.consistency } : {}),
   };
-  if (options.includeDiagnostics && outcome.diagnostics.length > 0) {
-    result.diagnostics = outcome.diagnostics;
-    result.diagnosticsDetailed = outcome.diagnosticsDetailed;
+
+  // In "warn" mode lint findings are diagnostics (always returned); translator
+  // diagnostics still need includeDiagnostics.
+  const lintDiagnostics: Diagnostic[] = lintErrors.map((e) => ({
+    blockId: e.blockId,
+    ...(e.location ? { line: e.location.line } : {}),
+    severity: "warning" as const,
+    code: `LINT_${e.code}`,
+    message: e.message,
+  }));
+  const detailed = [
+    ...lintDiagnostics,
+    ...(options.includeDiagnostics ? outcome.diagnosticsDetailed : []),
+  ];
+  const messages = [
+    ...lintErrors.map((e) => e.message),
+    ...(options.includeDiagnostics ? outcome.diagnostics : []),
+  ];
+  if (detailed.length > 0) {
+    result.diagnostics = messages;
+    result.diagnosticsDetailed = detailed;
   }
   return result;
 }

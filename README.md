@@ -46,7 +46,7 @@ npx nlp2py examples/example.nl
 # AST mode (model → JSON AST → deterministic Python; makes additions visible)
 npx nlp2py --ast examples/example.nl
 
-# Optional NL linter (blocks translation on errors)
+# Optional NL linter (--lint blocks translation on errors; --lint-mode warn only reports)
 npx nlp2py --lint examples/undefined_variable.nl
 
 # Teacher/debug: translator diagnostics on stderr
@@ -68,7 +68,8 @@ Exit code `1` when `--lint` reports errors; otherwise Python is written to stdou
 | `--api azure\|gateway` | LLM backend (default `azure`) |
 | `--model <name>` | Override model for the selected backend |
 | `--ast` | AST transcription pipeline |
-| `--lint` | Run rule-based NL linter before calling the API |
+| `--lint` | Run the English NL linter and block on errors (same as `--lint-mode block`) |
+| `--lint-mode off\|warn\|block` | Linter behaviour (`warn` reports findings and still translates) |
 | `--separate-blocks` | Translate each API block independently |
 | `--unsupported comment\|fallback` | AST: comment vs direct-mode fallback for unknown constructs |
 | `--reasoning minimal\|low\|medium\|high` | Reasoning effort for the model |
@@ -230,14 +231,22 @@ Unsupported constructs become `# unsupported: …` comments unless `unsupportedB
 
 ## Natural language linter
 
-Optional (`enableLint` / `--lint`). Rule-based checks for:
+**English only** (Finnish instructions are not linted). Rule-based checks for:
 
 - Assignment-style prose (“make a program that…”)
-- Ambiguous words (`big`, `many`, …)
-- Undefined variables (English patterns)
-- Unsupported condition/loop forms
+- Ambiguous words (`big`, `small`, `huge`, `many`, `few`), matched as whole words outside quoted text (so “ambiguous”, “biggest”, “Germany” are fine)
+- Undefined variables (English patterns; operation phrases such as “the sum of x and y” are skipped)
+- Unsupported condition forms (comparisons against a number or another variable, or equality between variables) and `Repeat` loops without a count (`Repeat 3 times:` or `Repeat the following 3 times`)
 
-Lint rules are narrower than AST mode capabilities (English-centric v0).
+`lintMode` controls what happens with the findings:
+
+| Mode | Behaviour |
+|------|-----------|
+| `"off"` (default) | No linting |
+| `"warn"` | Translate anyway; findings are returned as `LINT_*` diagnostics (always returned, for the author of the instructions); `errors` stays empty |
+| `"block"` | Return the findings in `errors` and translate nothing |
+
+`enableLint: true` / CLI `--lint` still mean `"block"`; CLI `--lint-mode off|warn|block` and the HTTP field `lintMode` set it explicitly. Lint rules are narrower than AST mode capabilities, so prefer `"warn"`.
 
 ## Development
 

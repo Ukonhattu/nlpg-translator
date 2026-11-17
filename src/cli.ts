@@ -6,7 +6,7 @@ import { resolveLlmConfig } from "./llmConfig.js";
 
 function usage() {
   console.error(
-    "Usage: nlp2py <file> [--api azure|gateway] [--endpoint <url>] [--model <name>] [--lint] [--separate-blocks] [--ast] [--unsupported <comment|fallback>] [--reasoning <minimal|low|medium|high>] [--verbose] [--strict-output-fidelity] [--grounding <off|warn|strict>]"
+    "Usage: nlp2py <file> [--api azure|gateway] [--endpoint <url>] [--model <name>] [--lint] [--lint-mode <off|warn|block>] [--separate-blocks] [--ast] [--unsupported <comment|fallback>] [--reasoning <minimal|low|medium|high>] [--verbose] [--strict-output-fidelity] [--grounding <off|warn|strict>]"
   );
 }
 
@@ -17,6 +17,7 @@ async function main() {
   let endpoint: string | undefined;
   let model: string | undefined;
   let enableLint = false;
+  let lintMode: "off" | "warn" | "block" | undefined;
   let separateBlocks = false;
   let astMode = false;
   let unsupportedBehavior: "comment" | "fallback" = "comment";
@@ -57,6 +58,17 @@ async function main() {
         process.exit(1);
       }
       model = args[i + 1];
+      i++;
+      continue;
+    }
+
+    if (arg === "--lint-mode") {
+      const value = args[i + 1];
+      if (value !== "off" && value !== "warn" && value !== "block") {
+        console.error("Error: --lint-mode requires one of 'off', 'warn', 'block'.");
+        process.exit(1);
+      }
+      lintMode = value;
       i++;
       continue;
     }
@@ -180,6 +192,7 @@ async function main() {
     endpoint: resolved.endpoint,
     model: resolved.model,
     enableLint,
+    lintMode,
     separateBlocks,
     astMode,
     unsupportedBehavior,
