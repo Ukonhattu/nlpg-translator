@@ -22,7 +22,14 @@ import {
 import { checkGrounding } from "./grounding.js";
 import { AST_PROMPT_V2 } from "./prompts/ast.v2.js";
 import { generatePython, type CodegenDiagnostic } from "./codegen.js";
-import { countRequestedPrints } from "./outputVerbs.js";
+import {
+  postProcessDirect,
+  stripCodeFences,
+  type DirectPostProcess,
+} from "./direct.js";
+import { DIRECT_PROMPT_V1 } from "./prompts/direct.v1.js";
+import { DIRECT_PROMPT_V2 } from "./prompts/direct.v2.js";
+import { checkPythonSyntax } from "./pythonSyntax.js";
 
 /** The model's response could not be used (unparseable, incomplete or empty). */
 export class LlmResponseError extends Error {
@@ -206,45 +213,36 @@ async function translateDirectBlock(
   options: TranslateOptions
 ): Promise<BlockOutcome> {
   try {
-    const code = (await translateSingleBlock(block, options)).trim();
+    const result = await translateSingleBlock(block, options);
+    const code = result.code.trim();
     if (!code && block.text.trim()) {
       throw new LlmResponseError("empty_response", "Model returned no code.");
     }
     return {
       id: block.id,
-      status: "ok",
+      // A syntax error means the code is not fully usable: report it as partial.
+      status: result.syntaxErrors > 0 ? "partial" : "ok",
       pythonCode: code,
       droppedNodes: 0,
       unknownNodes: 0,
-      diagnostics: [],
+      diagnostics: result.diagnostics,
     };
   } catch (err) {
     return failedOutcome(block, err);
   }
 }
 
+type DirectResult = {
+  code: string;
+  diagnostics: Diagnostic[];
+  syntaxErrors: number;
+};
+
 async function translateSingleBlock(
   block: Block,
   options: TranslateOptions
-): Promise<string> {
-  const systemPrompt =
-    "You translate beginner-friendly natural language programming instructions into Python. " +
-    "Each input is a single block, translated independently. " +
-    "Use only basic Python (variables, arithmetic, if/else, for/while, print). " +
-    "Use global variables rather than defining functions.\n" +
-    "CRITICAL FIDELITY RULES:\n" +
-    "- Translate ONLY what is explicitly written. Never add, infer, or invent logic, " +
-    "variables, or statements that are not directly stated in the instructions.\n" +
-    "- Never add a print/output statement unless the instruction explicitly asks to print, " +
-    "show, display, output, tulosta, näytä, or kirjoita something. Do not add prints to show results, to debug, or to be helpful.\n" +
-    "- Do not add example usage, test code, default values, or extra output.\n" +
-    "- Produce code for each given step only; do not introduce steps that are not there.\n" +
-    "- Output only raw Python code: no comments, no explanations, no markdown code fences.\n" +
-    "STYLE RULES:\n" +
-    "- Do not use augmented assignment operators (+=, -=, *=, /=, %=). Always write " +
-    "the assignment out in full, e.g. use `a = a + value` instead of `a += value`.\n" +
-    "- For reading user input, use simple assignments only, e.g. `name = input()` or " +
-    "`points = int(input())`. Never use conditional expressions, placeholders, or tricks.";
+): Promise<DirectResult> {
+  const prompt = options.promptVersion === "v1" ? DIRECT_PROMPT_V1 : DIRECT_PROMPT_V2;
 
   const userContent =
     "Translate the following block into Python. " +
@@ -253,14 +251,41 @@ async function translateSingleBlock(
     block.text;
 
   const rawText = await callLlm(
-    systemPrompt,
+    prompt.text,
     userContent,
     options,
-    options.reasoningEffort
+    // Same default as AST mode so the two can be compared fairly.
+    options.reasoningEffort ?? "low"
   );
-  return enforceFidelity(rawText, block.text, {
-    strictOutputFidelity: options.strictOutputFidelity,
-  });
+
+  const processed = postProcessDirect(rawText, block.text, options.directPostProcess);
+  const diagnostics: Diagnostic[] = [];
+
+  if (processed.emittedPrints > processed.requestedOutputLines) {
+    diagnostics.push({
+      blockId: block.id,
+      severity: "warning",
+      code: "DIRECT_EXTRA_PRINTS",
+      message: `The model emitted ${processed.emittedPrints} print() call(s) but only ${processed.requestedOutputLines} source line(s) ask for output.`,
+    });
+  }
+
+  let syntaxErrors = 0;
+  if (options.directParseCheck !== false && processed.code) {
+    const problems = await checkPythonSyntax(processed.code);
+    for (const p of problems ?? []) {
+      syntaxErrors++;
+      diagnostics.push({
+        blockId: block.id,
+        line: p.line,
+        severity: "error",
+        code: "DIRECT_SYNTAX_ERROR",
+        message: p.message,
+      });
+    }
+  }
+
+  return { code: processed.code, diagnostics, syntaxErrors };
 }
 
 type LlmCallResult = {
@@ -448,146 +473,21 @@ export function extractResponseText(data: any): string {
 }
 
 /**
- * Post-processes direct-mode model output. Always strips markdown code fences,
- * comments, and dead conditional expressions the model sometimes invents.
- * When strictOutputFidelity is set, also removes print() lines beyond the
- * number of source lines that use explicit output verbs.
+ * Post-processes direct-mode model output: strips markdown fences and comments
+ * (string-aware). Nothing is rewritten or deleted beyond that; use
+ * `directPostProcess: "none"` to keep comments as well. Kept for compatibility:
+ * `strictOutputFidelity` no longer deletes lines in direct mode (see
+ * DIRECT_EXTRA_PRINTS).
  */
 export function enforceFidelity(
   modelText: string,
   sourceText: string,
-  options: { strictOutputFidelity?: boolean } = {}
+  options: {
+    strictOutputFidelity?: boolean;
+    directPostProcess?: DirectPostProcess;
+  } = {}
 ): string {
-  const withoutFences = stripCodeFences(modelText);
-  const withoutComments = withoutFences
-    .split(/\r?\n/)
-    .map(stripLineComments)
-    .filter((line) => line.trim().length > 0)
-    .join("\n");
-  const simplified = simplifyDeadTernaries(withoutComments);
-  if (!options.strictOutputFidelity) {
-    return simplified;
-  }
-  const allowedPrints = countRequestedPrints(sourceText);
-  return removeUnrequestedPrints(simplified, allowedPrints);
-}
-
-/** Removes `# ...` from a line, respecting string literals. */
-function stripLineComments(line: string): string {
-  let inString: '"' | "'" | null = null;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (inString) {
-      if (ch === "\\") {
-        i++;
-        continue;
-      }
-      if (ch === inString) inString = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      inString = ch;
-      continue;
-    }
-    if (ch === "#") {
-      return line.slice(0, i).trimEnd();
-    }
-  }
-  return line;
-}
-
-/**
- * Collapses dead conditional expressions the model sometimes emits, e.g.
- * `int(input()) if False else int(input())` -> `int(input())`.
- */
-function simplifyDeadTernaries(pythonCode: string): string {
-  return pythonCode
-    .split(/\r?\n/)
-    .map((line) => {
-      const assignFalse = line.match(
-        /^(\s*\w+\s*=\s*)(.+)\s+if\s+False\s+else\s+(.+)$/
-      );
-      if (assignFalse) {
-        return `${assignFalse[1]}${assignFalse[3].trim()}`;
-      }
-      const assignTrue = line.match(
-        /^(\s*\w+\s*=\s*)(.+)\s+if\s+True\s+else\s+(.+)$/
-      );
-      if (assignTrue) {
-        return `${assignTrue[1]}${assignTrue[2].trim()}`;
-      }
-      const falseElse = line.match(/^(\s*)(.+?)\s+if\s+False\s+else\s+(.+)$/);
-      if (falseElse) {
-        return `${falseElse[1]}${falseElse[3].trim()}`;
-      }
-      const trueElse = line.match(/^(\s*)(.+?)\s+if\s+True\s+else\s+(.+)$/);
-      if (trueElse) {
-        return `${trueElse[1]}${trueElse[2].trim()}`;
-      }
-      return line;
-    })
-    .join("\n");
-}
-
-function stripCodeFences(text: string): string {
-  return text
-    .split(/\r?\n/)
-    .filter((line) => !/^\s*```/.test(line))
-    .join("\n")
-    .trim();
-}
-
-function indentWidth(line: string): number {
-  return line.match(/^\s*/)?.[0].length ?? 0;
-}
-
-/**
- * Removes any print() statements beyond `allowed`, preserving order (the first
- * `allowed` prints are kept). If a removed print is the sole body of an indented
- * block, it is replaced with `pass` so the code stays syntactically valid.
- */
-function removeUnrequestedPrints(pythonCode: string, allowed: number): string {
-  const lines = pythonCode.split(/\r?\n/);
-  const out: string[] = [];
-  let kept = 0;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const isPrint = /^\s*print\s*\(/.test(line);
-
-    if (isPrint && kept >= allowed) {
-      if (indentWidth(line) > 0 && isSoleBlockBody(lines, i)) {
-        out.push(line.slice(0, indentWidth(line)) + "pass");
-      }
-      continue;
-    }
-
-    if (isPrint) kept++;
-    out.push(line);
-  }
-
-  return out.join("\n").trim();
-}
-
-/**
- * True when the statement at `idx` is the only statement inside its block, i.e.
- * the previous non-empty line opens a block (`...:`) at a smaller indent and the
- * block ends right after this line. Used to avoid leaving an empty block body.
- */
-function isSoleBlockBody(lines: string[], idx: number): boolean {
-  const indent = indentWidth(lines[idx]);
-
-  let prev = idx - 1;
-  while (prev >= 0 && !lines[prev].trim()) prev--;
-  if (prev < 0) return false;
-  const opensBlock =
-    lines[prev].trimEnd().endsWith(":") && indentWidth(lines[prev]) < indent;
-  if (!opensBlock) return false;
-
-  let next = idx + 1;
-  while (next < lines.length && !lines[next].trim()) next++;
-  if (next >= lines.length) return true;
-  return indentWidth(lines[next]) < indent;
+  return postProcessDirect(modelText, sourceText, options.directPostProcess).code;
 }
 
 // ---------------------------------------------------------------------------
@@ -812,9 +712,10 @@ async function translateSingleBlockViaAst(
   // emitting `# unsupported:` comments.
   if (options.unsupportedBehavior === "fallback" && unknownNodes > 0) {
     try {
-      const pythonCode = (await translateSingleBlock(block, options)).trim();
+      const direct = await translateSingleBlock(block, options);
+      const pythonCode = direct.code.trim();
       if (pythonCode) {
-        diagnostics.push({
+        diagnostics.push(...direct.diagnostics, {
           blockId: block.id,
           severity: "info",
           code: "FALLBACK_TO_DIRECT",

@@ -73,8 +73,9 @@ export type TranslationResult = {
 };
 
 import type { LlmApi } from "./llmConfig.js";
+import type { DirectPostProcess } from "./direct.js";
 
-export type { LlmApi };
+export type { LlmApi, DirectPostProcess };
 
 export type TranslateOptions = {
   /**
@@ -170,8 +171,7 @@ export type TranslateOptions = {
   /**
    * Reasoning effort for reasoning-capable models (e.g. gpt-5). Lower effort
    * means far fewer hidden reasoning tokens and therefore much lower latency.
-   * Left undefined for the direct mode (model default); the AST path defaults
-   * to "low" since transcribing instructions into an AST is largely mechanical.
+   * Defaults to "low" in both modes so they can be compared fairly.
    */
   reasoningEffort?: "minimal" | "low" | "medium" | "high";
   /**
@@ -179,10 +179,29 @@ export type TranslateOptions = {
    */
   includeDiagnostics?: boolean;
   /**
-   * When true, drop or strip print/output not grounded in explicit output verbs
-   * on the cited source line. Default false (warn in AST mode, keep prints).
+   * AST mode: when true, drop print nodes whose source line has no explicit
+   * output verb. Default false (warn, keep prints). Direct mode no longer deletes
+   * anything: extra prints produce a `DIRECT_EXTRA_PRINTS` warning instead.
    */
   strictOutputFidelity?: boolean;
+  /**
+   * Direct mode only. Default: strip code fences and comments (string-aware).
+   * `"none"`: only strip code fences (recommended for experimental baselines).
+   * `{ deadTernaries: true }`: also apply the legacy `x if False else y`
+   * rewrite (off by default; it is not string-aware).
+   */
+  directPostProcess?: DirectPostProcess;
+  /**
+   * Direct mode: check the generated Python with a WASM parser. A syntax error
+   * adds a `DIRECT_SYNTAX_ERROR` diagnostic and makes the block "partial"; the
+   * code is left unchanged. Default true.
+   */
+  directParseCheck?: boolean;
+  /**
+   * Direct mode prompt version. "v2" (default) lists the same constructs as the
+   * AST prompt; "v1" reproduces earlier results (no functions, narrower scope).
+   */
+  promptVersion?: "v1" | "v2";
 };
 
 import { lintProgram } from "./linter.js";

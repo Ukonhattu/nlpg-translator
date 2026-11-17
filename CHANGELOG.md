@@ -4,6 +4,29 @@
 
 ### Behaviour changes
 
+- **Direct mode stops repairing model output (Phase 7).**
+  - `strictOutputFidelity` no longer deletes `print` lines in direct mode (it
+    still drops ungrounded prints in AST mode). Instead a `DIRECT_EXTRA_PRINTS`
+    warning is recorded when the model emits more `print()` calls than the
+    source lines that ask for output. `removeUnrequestedPrints` is gone.
+  - The dead-ternary rewrite (`x if False else y`) is off by default (it also
+    rewrote text inside strings). Opt in with
+    `directPostProcess: { deadTernaries: true }`.
+  - Comment stripping is string-aware (quotes, triple quotes, escapes) and keeps
+    blank lines inside strings. `directPostProcess: "none"` returns the model
+    text with only code fences removed (recommended for research baselines).
+  - Generated direct-mode code is checked with a WASM parser
+    (`web-tree-sitter`, loaded lazily); a syntax error adds
+    `DIRECT_SYNTAX_ERROR` and makes the block `partial` without changing the
+    code (`directParseCheck: false` disables it). Note: the grammar is current
+    Python, so it accepts PEP 701 f-strings that Python 3.10 rejects.
+  - New direct prompt `direct.v2` with the same construct scope as the AST
+    prompt (functions allowed). `promptVersion: "v1"` reproduces earlier
+    results. Direct mode now defaults `reasoningEffort` to `"low"`, like AST
+    mode.
+  - To reproduce results from before the fixes: check out tag
+    `pre-fix-baseline` (commit `05640c9`).
+
 - **LLM failures no longer throw by default (Phase 3).** `translateProgram` now
   reports an HTTP error, timeout, unparseable, incomplete or empty model
   response as a *failed block* (`status: "failed"`, `blocks[].failureReason`)

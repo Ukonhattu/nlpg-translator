@@ -8,6 +8,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { verifyProgram } from "../src/ast.js";
 import { generatePython } from "../src/codegen.js";
+import { translateProgram } from "../src/index.js";
 import { translateBlocksViaAst } from "../src/translator.js";
 import {
   assertParses,
@@ -240,4 +241,39 @@ describe("regressions: code injection through free-form fields (§1.4)", () => {
       expect(pythonAstHasNode(code, "Import")).toBe(false);
     });
   }
+});
+
+describe("regressions: direct-mode repairs removed (§4.1, §4.2)", () => {
+  const reply = (text: string) => ({
+    ok: true,
+    json: async () => ({
+      output: [{ type: "message", content: [{ type: "output_text", text }] }],
+    }),
+  });
+  const run = async (model: string, source: string, extra: object = {}) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(reply(model)));
+    return translateProgram([{ id: "b", text: source }], {
+      aaltoApiKey: "k", endpoint: "https://x.example/r", model: "m", ...extra,
+    });
+  };
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("two prints in a whole block: strict mode no longer deletes the second", async () => {
+    const code = 'print("a")\nprint("b")';
+    const r = await run(code, "Print a.\nLet x be 1.", { strictOutputFidelity: true });
+    expect(r.pythonCode).toBe(code);
+  });
+
+  it("a multi-line print survives intact and parses", async () => {
+    const code = 'print(\n    "a",\n    "b",\n)\nprint("c")';
+    const r = await run(code, "Print a and b.", { strictOutputFidelity: true });
+    expect(r.pythonCode).toBe(code);
+    assertParses(r.pythonCode);
+  });
+
+  it('print("a if False else b") is not rewritten inside the string', async () => {
+    const code = 'print("a if False else b")';
+    const r = await run(code, "Print the text.");
+    expect(r.pythonCode).toBe(code);
+  });
 });

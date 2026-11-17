@@ -73,7 +73,7 @@ Exit code `1` when `--lint` reports errors; otherwise Python is written to stdou
 | `--unsupported comment\|fallback` | AST: comment vs direct-mode fallback for unknown constructs |
 | `--reasoning minimal\|low\|medium\|high` | Reasoning effort for the model |
 | `--verbose` | Print `diagnostic:` lines to stderr (AST mode) |
-| `--strict-output-fidelity` | Drop/strip prints not grounded in explicit output verbs |
+| `--strict-output-fidelity` | AST: drop prints not grounded in explicit output verbs (direct mode only warns) |
 | `--grounding off\|warn\|strict` | AST: check steps against the source text (default `warn`) |
 | `--endpoint <url>` | Override API endpoint |
 
@@ -143,6 +143,10 @@ The HTTP server is meant for **internal deployment behind authentication**, not 
 - Upstream LLM calls time out after `LLM_TIMEOUT_MS`. Upstream error bodies are logged server-side and never returned; clients get a generic 502/504/500 with a `requestId`.
 
 The library and CLI still accept `endpoint`/`model` overrides, because there the caller owns the API key. `timeoutMs` is available in `TranslateOptions`.
+
+### Direct mode: no silent repairs
+
+Direct mode returns what the model wrote, after removing markdown fences and comments (string-aware). It does not delete or rewrite lines. Suspicious output is reported instead: `DIRECT_EXTRA_PRINTS` (more `print()` calls than source lines asking for output) and `DIRECT_SYNTAX_ERROR` (checked with a WASM tree-sitter parser; the block becomes `partial`, the code is untouched). For experimental baselines use `directPostProcess: "none"` (only fences removed) and pin `promptVersion` (`"v2"` default, `"v1"` for the original prompt). Both modes default to `reasoningEffort: "low"`.
 
 ### AST mode: what is verified (and what is not)
 
