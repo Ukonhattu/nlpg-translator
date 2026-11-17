@@ -66,6 +66,14 @@
 
 ### Additions
 
+- **Tracing and reproducibility (Phase 9).** `trace` callback (`TraceRecord`
+  per LLM call and per block result), `traceIncludeInput` (default false, D8),
+  `requestId`; CLI `--trace` / `--trace-include-input`. Prompt registry
+  (`src/prompts/index.ts`) with SHA-256 per prompt and a test that fails when a
+  prompt changes without a new id. `PACKAGE_VERSION` is generated from
+  package.json by `scripts/gen-version.mjs` as part of `npm run build`. The HTTP
+  server passes its request id into the trace.
+
 - **Multi-sample consistency (Phase 6).** `samples` (1–7, AST mode),
   `consistency` result field, `CONSISTENCY_DISAGREEMENT` / `SAMPLE_FAILED`
   diagnostics, `src/consistency.ts`. `temperature` option (gateway only, only

@@ -30,6 +30,10 @@ import {
 import { DIRECT_PROMPT_V1 } from "./prompts/direct.v1.js";
 import { DIRECT_PROMPT_V2 } from "./prompts/direct.v2.js";
 import { checkPythonSyntax } from "./pythonSyntax.js";
+import { sha256Hex } from "./prompts/index.js";
+import { emitTrace, endpointHost, redactDiagnostics } from "./trace.js";
+import { AST_SCHEMA_VERSION } from "./ast.js";
+import { randomUUID } from "node:crypto";
 
 /** The model's response could not be used (unparseable, incomplete or empty). */
 export class LlmResponseError extends Error {
@@ -201,9 +205,13 @@ export async function translateBlocksDetailed(
   blocks: Block[],
   options: TranslateOptions
 ): Promise<TranslationOutcome> {
+  options = withRequestId(options);
   const outcomes: BlockOutcome[] = [];
   for (const block of blocksToTranslate(blocks, options)) {
-    outcomes.push(await translateDirectBlock(block, options));
+    const started = Date.now();
+    const outcome = await translateDirectBlock(block, options);
+    traceBlockResult(options, "direct", block, outcome, Date.now() - started);
+    outcomes.push(outcome);
   }
   return assemble(outcomes, options);
 }
@@ -255,7 +263,8 @@ async function translateSingleBlock(
     userContent,
     options,
     // Same default as AST mode so the two can be compared fairly.
-    options.reasoningEffort ?? "low"
+    options.reasoningEffort ?? "low",
+    { blockId: block.id, mode: "direct", inputText: block.text }
   );
 
   const processed = postProcessDirect(rawText, block.text, options.directPostProcess);
@@ -298,13 +307,77 @@ type LlmCallResult = {
   temperature?: number;
 };
 
+/** Everything needed to label trace records for one model call or block. */
+type TraceCtx = {
+  blockId: string;
+  mode: "direct" | "ast";
+  sampleIndex?: number;
+  inputText: string;
+};
+
+function promptFor(mode: "direct" | "ast", options: TranslateOptions) {
+  if (mode === "ast") return AST_PROMPT_V2;
+  return options.promptVersion === "v1" ? DIRECT_PROMPT_V1 : DIRECT_PROMPT_V2;
+}
+
+/** Ensures one requestId is shared by every record of a translation. */
+function withRequestId(options: TranslateOptions): TranslateOptions {
+  return options.requestId ? options : { ...options, requestId: randomUUID() };
+}
+
+function llmIdentity(options: TranslateOptions) {
+  try {
+    const c = resolveLlmConfig(options);
+    return { llmApi: c.llmApi, endpointHost: endpointHost(c.endpoint), model: c.model };
+  } catch {
+    return {};
+  }
+}
+
+function effectiveTemperature(options: TranslateOptions): number | undefined {
+  return (options.llmApi ?? "azure") === "gateway" ? options.temperature : undefined;
+}
+
+function traceBlockResult(
+  options: TranslateOptions,
+  mode: "direct" | "ast",
+  block: Block,
+  outcome: BlockOutcome,
+  durationMs: number
+): void {
+  if (!options.trace) return;
+  const prompt = promptFor(mode, options);
+  const includeInput = options.traceIncludeInput === true;
+  emitTrace(options, {
+    event: "block_result",
+    requestId: options.requestId ?? "",
+    blockId: block.id,
+    mode,
+    promptId: prompt.id,
+    promptSha256: sha256Hex(prompt.text),
+    ...(mode === "ast" ? { astSchemaVersion: AST_SCHEMA_VERSION } : {}),
+    ...llmIdentity(options),
+    reasoningEffort: options.reasoningEffort ?? "low",
+    temperature: effectiveTemperature(options),
+    inputSha256: sha256Hex(block.text),
+    ...(includeInput ? { inputText: block.text, finalCode: outcome.pythonCode } : {}),
+    diagnostics: redactDiagnostics(outcome.diagnostics, includeInput),
+    status: outcome.status,
+    ...(outcome.failureReason ? { error: outcome.failureReason } : {}),
+    durationMs,
+  });
+}
+
 async function callLlm(
   systemPrompt: string,
   userContent: string,
   options: TranslateOptions,
-  reasoningEffort?: TranslateOptions["reasoningEffort"]
+  reasoningEffort?: TranslateOptions["reasoningEffort"],
+  ctx?: TraceCtx
 ): Promise<string> {
-  return (await callLlmDetailed(systemPrompt, userContent, options, reasoningEffort)).text;
+  return (
+    await callLlmDetailed(systemPrompt, userContent, options, reasoningEffort, undefined, ctx)
+  ).text;
 }
 
 async function callLlmDetailed(
@@ -312,18 +385,68 @@ async function callLlmDetailed(
   userContent: string,
   options: TranslateOptions,
   reasoningEffort?: TranslateOptions["reasoningEffort"],
-  structured?: { mode: "auto" | "on" | "off" }
+  structured?: { mode: "auto" | "on" | "off" },
+  ctx?: TraceCtx
 ): Promise<LlmCallResult> {
   const config = resolveLlmConfig(options);
-  return callResponses(
-    systemPrompt,
-    userContent,
-    config,
-    reasoningEffort,
-    options.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS,
-    structured,
-    options.temperature
-  );
+  const started = Date.now();
+  let responseStatus: string | undefined;
+  let usage: unknown;
+
+  const emit = (extra: { result?: LlmCallResult; error?: string }) => {
+    if (!options.trace || !ctx) return;
+    const prompt = promptFor(ctx.mode, options);
+    const includeInput = options.traceIncludeInput === true;
+    emitTrace(options, {
+      event: "llm_call",
+      requestId: options.requestId ?? "",
+      blockId: ctx.blockId,
+      mode: ctx.mode,
+      ...(ctx.sampleIndex !== undefined ? { sampleIndex: ctx.sampleIndex } : {}),
+      promptId: prompt.id,
+      promptSha256: sha256Hex(prompt.text),
+      ...(ctx.mode === "ast" ? { astSchemaVersion: AST_SCHEMA_VERSION } : {}),
+      llmApi: config.llmApi,
+      endpointHost: endpointHost(config.endpoint),
+      model: config.model,
+      reasoningEffort,
+      temperature: extra.result?.temperature,
+      ...(extra.result
+        ? {
+            structuredOutput: extra.result.structuredOutput,
+            structuredOutputFellBack: extra.result.fellBack,
+          }
+        : {}),
+      inputSha256: sha256Hex(ctx.inputText),
+      ...(includeInput ? { inputText: ctx.inputText } : {}),
+      responseStatus,
+      usage,
+      ...(extra.error ? { error: extra.error } : {}),
+      ...(includeInput && extra.result ? { rawOutputText: extra.result.text } : {}),
+      durationMs: Date.now() - started,
+    });
+  };
+
+  try {
+    const result = await callResponses(
+      systemPrompt,
+      userContent,
+      config,
+      reasoningEffort,
+      options.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS,
+      structured,
+      options.temperature,
+      (data) => {
+        responseStatus = typeof data?.status === "string" ? data.status : undefined;
+        usage = data?.usage;
+      }
+    );
+    emit({ result });
+    return result;
+  } catch (err) {
+    emit({ error: classifyFailure(err) ?? "error" });
+    throw err;
+  }
 }
 
 /** Endpoints that rejected `text.format` json_schema (auto mode), for the process lifetime. */
@@ -343,7 +466,8 @@ async function callResponses(
   reasoningEffort: TranslateOptions["reasoningEffort"] | undefined,
   timeoutMs: number,
   structured?: { mode: "auto" | "on" | "off" },
-  temperature?: number
+  temperature?: number,
+  onResponse?: (data: any) => void
 ): Promise<LlmCallResult> {
   const body: Record<string, unknown> = {
     model: config.model,
@@ -370,6 +494,7 @@ async function callResponses(
 
   try {
     const data = await postLlm(config, body, timeoutMs);
+    onResponse?.(data);
     return {
       text: extractResponseText(data),
       structuredOutput: useSchema ? "on" : "off",
@@ -390,6 +515,7 @@ async function callResponses(
   // auto mode: retry once without the schema.
   delete body.text;
   const data = await postLlm(config, body, timeoutMs);
+  onResponse?.(data);
   return {
     text: extractResponseText(data),
     structuredOutput: "off",
@@ -502,9 +628,13 @@ export async function translateBlocksViaAst(
   blocks: Block[],
   options: TranslateOptions
 ): Promise<AstTranslationResult> {
+  options = withRequestId(options);
   const outcomes: BlockOutcome[] = [];
   for (const block of blocksToTranslate(blocks, options)) {
-    outcomes.push(await translateSingleBlockViaAst(block, options));
+    const started = Date.now();
+    const outcome = await translateSingleBlockViaAst(block, options);
+    traceBlockResult(options, "ast", block, outcome, Date.now() - started);
+    outcomes.push(outcome);
   }
   return assemble(outcomes, options);
 }
@@ -583,7 +713,8 @@ async function runAstSample(
       userContent,
       options,
       options.reasoningEffort ?? "low",
-      { mode: options.structuredOutput ?? "auto" }
+      { mode: options.structuredOutput ?? "auto" },
+      { blockId: block.id, mode: "ast", sampleIndex: index, inputText: block.text }
     );
     rawText = call.text;
     if (call.fellBack) {

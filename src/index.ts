@@ -74,8 +74,10 @@ export type TranslationResult = {
 
 import type { LlmApi } from "./llmConfig.js";
 import type { DirectPostProcess } from "./direct.js";
+import type { TraceRecord } from "./trace.js";
 
-export type { LlmApi, DirectPostProcess };
+export type { LlmApi, DirectPostProcess, TraceRecord };
+export { PACKAGE_VERSION } from "./version.js";
 
 export type TranslateOptions = {
   /**
@@ -108,6 +110,20 @@ export type TranslateOptions = {
    * Emit `# [block <id>: translation failed]` for failed blocks (default true).
    */
   failedBlockMarker?: boolean;
+  /**
+   * Receives one record per LLM call and one per final block result, for
+   * reproducibility (prompt id/hash, model, sampling, durations, status). See
+   * `TraceRecord`; exceptions thrown by the callback are ignored.
+   */
+  trace?: (record: TraceRecord) => void;
+  /**
+   * Include student-derived text in trace records (`inputText`, `rawOutputText`,
+   * `finalCode`, diagnostic messages). Default false: student text may be
+   * personal data, so records carry only hashes unless you opt in.
+   */
+  traceIncludeInput?: boolean;
+  /** Correlation id copied into trace records (default: a random UUID per call). */
+  requestId?: string;
   /** Timeout for each LLM HTTP request in milliseconds (default 60000). */
   timeoutMs?: number;
   /**

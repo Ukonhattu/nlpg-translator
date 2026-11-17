@@ -225,6 +225,7 @@ export function createApp(env: NodeJS.ProcessEnv = process.env) {
         endpoint: resolved.endpoint,
         model: resolved.model,
         timeoutMs: cfg.timeoutMs,
+        requestId,
         throwOnFailure: true,
         enableLint: body.enableLint,
         lintMode: body.lintMode,

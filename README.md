@@ -76,6 +76,8 @@ Exit code `1` when `--lint` reports errors; otherwise Python is written to stdou
 | `--verbose` | Print `diagnostic:` lines to stderr (AST mode) |
 | `--strict-output-fidelity` | AST: drop prints not grounded in explicit output verbs (direct mode only warns) |
 | `--grounding off\|warn\|strict` | AST: check steps against the source text (default `warn`) |
+| `--trace <file.jsonl>` | Append one JSON line per LLM call and block result (see Reproducibility) |
+| `--trace-include-input` | Also record input text, raw output and final code in the trace |
 | `--endpoint <url>` | Override API endpoint |
 
 ## HTTP API
@@ -247,6 +249,25 @@ Unsupported constructs become `# unsupported: …` comments unless `unsupportedB
 | `"block"` | Return the findings in `errors` and translate nothing |
 
 `enableLint: true` / CLI `--lint` still mean `"block"`; CLI `--lint-mode off|warn|block` and the HTTP field `lintMode` set it explicitly. Lint rules are narrower than AST mode capabilities, so prefer `"warn"`.
+
+## Reproducibility
+
+For a study run, record what determines the output: the **package version**, the **prompt id** (`ast.v2`, `direct.v1`, `direct.v2`; each has a SHA-256 in the registry `PROMPTS`, and a test fails if a prompt's text changes without a new id), the **model and backend**, and the options that affect output (`reasoningEffort`, `temperature` (gateway only), `samples`, `structuredOutput`, `grounding`, `directPostProcess`, `promptVersion`). The `trace` option records all of this automatically:
+
+```ts
+const records: TraceRecord[] = [];
+await translateProgram(blocks, { astMode: true, trace: (r) => records.push(r) });
+```
+
+or from the CLI (JSON Lines, appended):
+
+```bash
+npx nlp2py --ast --trace run.jsonl examples/example.nl
+```
+
+One `llm_call` record is written per model request (with `sampleIndex` for multi-sample runs, `responseStatus`, `usage`, `structuredOutput`, `durationMs`) and one `block_result` per block (`status`, diagnostics, `durationMs`). Records share a `requestId` (pass your own to correlate with logs) and carry `packageVersion`, `promptId`/`promptSha256`, `astSchemaVersion`, `llmApi`, `endpointHost` (host only), `model`, and `inputSha256`. They never contain API keys or full endpoint URLs.
+
+**Student text is personal data.** By default records contain only hashes: no input, no raw model output, no generated code, and diagnostic messages (which quote source lines) are dropped. `traceIncludeInput: true` / `--trace-include-input` adds `inputText`, `rawOutputText`, `finalCode` and messages. Only enable it if your data management plan allows storing student text. Hashes of very short inputs can be guessed, so treat even default traces as research data.
 
 ## Development
 
