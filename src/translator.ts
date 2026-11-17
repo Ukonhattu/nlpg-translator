@@ -12,6 +12,7 @@ import {
   verifyProgram,
   type Stmt,
 } from "./ast.js";
+import { astResponseFormat, stripNulls } from "./astSchema.js";
 import { generatePython, type CodegenDiagnostic } from "./codegen.js";
 import { countRequestedPrints } from "./outputVerbs.js";
 
@@ -234,29 +235,59 @@ async function translateSingleBlock(
   });
 }
 
+type LlmCallResult = {
+  text: string;
+  /** Whether the JSON-schema `text.format` was in the request that succeeded. */
+  structuredOutput: "on" | "off";
+  /** True when `auto` mode retried without the schema after a 400/422. */
+  fellBack: boolean;
+};
+
 async function callLlm(
   systemPrompt: string,
   userContent: string,
   options: TranslateOptions,
   reasoningEffort?: TranslateOptions["reasoningEffort"]
 ): Promise<string> {
+  return (await callLlmDetailed(systemPrompt, userContent, options, reasoningEffort)).text;
+}
+
+async function callLlmDetailed(
+  systemPrompt: string,
+  userContent: string,
+  options: TranslateOptions,
+  reasoningEffort?: TranslateOptions["reasoningEffort"],
+  structured?: { mode: "auto" | "on" | "off" }
+): Promise<LlmCallResult> {
   const config = resolveLlmConfig(options);
   return callResponses(
     systemPrompt,
     userContent,
     config,
     reasoningEffort,
-    options.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS
+    options.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS,
+    structured
   );
 }
+
+/** Endpoints that rejected `text.format` json_schema (auto mode), for the process lifetime. */
+const structuredUnsupported = new Set<string>();
+
+/** Test hook: forget which endpoints were found not to support structured output. */
+export function resetStructuredOutputCache(): void {
+  structuredUnsupported.clear();
+}
+
+const SCHEMA_ERROR = /schema|format|structured|response_format/i;
 
 async function callResponses(
   systemPrompt: string,
   userContent: string,
   config: ResolvedLlmConfig,
   reasoningEffort: TranslateOptions["reasoningEffort"] | undefined,
-  timeoutMs: number
-): Promise<string> {
+  timeoutMs: number,
+  structured?: { mode: "auto" | "on" | "off" }
+): Promise<LlmCallResult> {
   const body: Record<string, unknown> = {
     model: config.model,
     input: [
@@ -269,8 +300,33 @@ async function callResponses(
     body.reasoning = { effort: reasoningEffort };
   }
 
+  const mode = structured?.mode ?? "off";
+  const useSchema =
+    mode === "on" || (mode === "auto" && !structuredUnsupported.has(config.endpoint));
+  if (useSchema) body.text = astResponseFormat();
+
+  try {
+    const data = await postLlm(config, body, timeoutMs);
+    return {
+      text: extractResponseText(data),
+      structuredOutput: useSchema ? "on" : "off",
+      fellBack: false,
+    };
+  } catch (err) {
+    const schemaRejected =
+      useSchema &&
+      mode === "auto" &&
+      err instanceof LlmHttpError &&
+      (err.status === 400 || err.status === 422) &&
+      SCHEMA_ERROR.test(err.body);
+    if (!schemaRejected) throw err;
+    structuredUnsupported.add(config.endpoint);
+  }
+
+  // auto mode: retry once without the schema.
+  delete body.text;
   const data = await postLlm(config, body, timeoutMs);
-  return extractResponseText(data);
+  return { text: extractResponseText(data), structuredOutput: "off", fellBack: true };
 }
 
 export const DEFAULT_LLM_TIMEOUT_MS = 60_000;
@@ -587,13 +643,25 @@ async function translateSingleBlockViaAst(
     numberedSource;
 
   let rawText: string;
+  const preDiagnostics: Diagnostic[] = [];
   try {
-    rawText = await callLlm(
+    const call = await callLlmDetailed(
       AST_SYSTEM_PROMPT,
       userContent,
       options,
-      options.reasoningEffort ?? "low"
+      options.reasoningEffort ?? "low",
+      { mode: options.structuredOutput ?? "auto" }
     );
+    rawText = call.text;
+    if (call.fellBack) {
+      preDiagnostics.push({
+        blockId: block.id,
+        severity: "info",
+        code: "STRUCTURED_OUTPUT_UNSUPPORTED",
+        message:
+          "The endpoint rejected structured output; retried without a JSON schema.",
+      });
+    }
   } catch (err) {
     return failedOutcome(block, err);
   }
@@ -611,14 +679,17 @@ async function translateSingleBlockViaAst(
     );
   }
 
+  // Strict-mode responses use null for absent optional fields.
+  parsed = stripNulls(parsed);
+
   const verified = verifyProgram(parsed, block.text, {
     strictOutputFidelity: options.strictOutputFidelity,
   });
   const { statements } = verified;
-  const diagnostics: Diagnostic[] = verified.diagnosticsDetailed.map((d) => ({
-    blockId: block.id,
-    ...d,
-  }));
+  const diagnostics: Diagnostic[] = [
+    ...preDiagnostics,
+    ...verified.diagnosticsDetailed.map((d) => ({ blockId: block.id, ...d })),
+  ];
   const unknownNodes = countUnknown(statements);
 
   // When configured to fall back, hand any block containing constructs the AST

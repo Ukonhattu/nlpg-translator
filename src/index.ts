@@ -108,6 +108,13 @@ export type TranslateOptions = {
    */
   astMode?: boolean;
   /**
+   * AST mode only: request the AST as schema-constrained JSON (`text.format`
+   * json_schema, strict). "auto" (default) tries it and, if the endpoint rejects
+   * it with a schema/format-related 400/422, retries once without it and
+   * remembers that for the endpoint; "on" never falls back; "off" never sends it.
+   */
+  structuredOutput?: "auto" | "on" | "off";
+  /**
    * In astMode, controls what happens for source constructs the AST cannot
    * represent (which the model marks as "unknown" nodes):
    *  - "comment"  (default): render them as `# unsupported: ...` comments so the

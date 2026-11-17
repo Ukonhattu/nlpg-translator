@@ -32,6 +32,14 @@
 
 ### Additions
 
+- **Structured output for AST mode (Phase 4).** `structuredOutput: "auto" | "on" | "off"`
+  (default `"auto"`) sends the AST JSON Schema (`src/astSchema.ts`) as
+  `text.format` (`json_schema`, strict). In `auto`, a schema/format-related
+  400/422 triggers one retry without it and the endpoint is remembered as
+  unsupported for the process lifetime (diagnostic `STRUCTURED_OUTPUT_UNSUPPORTED`).
+  `null` placeholders for absent optional fields are removed before
+  verification. `parseJsonObject` remains as the fallback path.
+
 - `TranslationResult.blocks`, `status`, `diagnosticsDetailed` (structured
   diagnostics with `blockId`, `line`, `severity`, `code`, `message`).
 - `TranslateOptions.throwOnFailure`, `failedBlockMarker`, `timeoutMs`.

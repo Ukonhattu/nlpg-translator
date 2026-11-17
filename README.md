@@ -143,6 +143,10 @@ The HTTP server is meant for **internal deployment behind authentication**, not 
 
 The library and CLI still accept `endpoint`/`model` overrides, because there the caller owns the API key. `timeoutMs` is available in `TranslateOptions`.
 
+### Structured output (AST mode)
+
+In AST mode the request carries a strict JSON Schema for the AST (`text.format`), so the model can only return well-formed nodes. `structuredOutput: "auto"` (default) falls back to plain JSON once if an endpoint (e.g. the vLLM gateway) rejects the schema; use `"off"` to never send it or `"on"` to require it. The schema constrains shape only; line numbers, identifiers and grounding are still checked by verification.
+
 ## Result status and diagnostics
 
 `translateProgram` returns, besides `pythonCode` and `errors`:
