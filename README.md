@@ -43,7 +43,7 @@ After `npm run build`:
 # Direct mode (model writes Python)
 npx nlp2py examples/example.nl
 
-# AST mode (model → JSON AST → deterministic Python; recommended for fidelity)
+# AST mode (model → JSON AST → deterministic Python; makes additions visible)
 npx nlp2py --ast examples/example.nl
 
 # Optional NL linter (blocks translation on errors)
@@ -74,6 +74,7 @@ Exit code `1` when `--lint` reports errors; otherwise Python is written to stdou
 | `--reasoning minimal\|low\|medium\|high` | Reasoning effort for the model |
 | `--verbose` | Print `diagnostic:` lines to stderr (AST mode) |
 | `--strict-output-fidelity` | Drop/strip prints not grounded in explicit output verbs |
+| `--grounding off\|warn\|strict` | AST: check steps against the source text (default `warn`) |
 | `--endpoint <url>` | Override API endpoint |
 
 ## HTTP API
@@ -142,6 +143,17 @@ The HTTP server is meant for **internal deployment behind authentication**, not 
 - Upstream LLM calls time out after `LLM_TIMEOUT_MS`. Upstream error bodies are logged server-side and never returned; clients get a generic 502/504/500 with a `requestId`.
 
 The library and CLI still accept `endpoint`/`model` overrides, because there the caller owns the API key. `timeoutMs` is available in `TranslateOptions`.
+
+### AST mode: what is verified (and what is not)
+
+The model transcribes the instructions into a JSON AST (schema v2); Python is generated deterministically from it. Every step must cite its source `line` and quote verbatim `evidence`, and `print` steps must name the `outputCue` word on that line. Verification then checks:
+
+- **Shape and safety:** node shapes, identifiers, line numbers, nesting depth.
+- **Grounding** (`grounding: "warn"` by default, `"strict"`, or `"off"`), reported as `GROUNDING_*` diagnostics:
+  `EVIDENCE` (quote is on the cited line), `OUTPUT_CUE` (print has a real output word, not "the"), `LITERAL` (every number and string appears on the line, including number words such as "twenty" / "kaksikymmentä"), `IDENTIFIER` (name parts occur in the block), `LINE_UNCITED` (a source line no step represents), `LINE_MULTI` (one line cited by too many steps), `NESTING` (a child step outside its parent's line span). ASTs without evidence (v1) still work; `GROUNDING_V1_INPUT` notes that evidence checks were skipped.
+- In `"strict"` mode a step failing the evidence, cue or literal check is replaced by `# unsupported: ...` (a compound step takes its nested steps with it) and the block becomes `partial`.
+
+This makes invented steps, values and prints **visible or removable**. It does **not** check that the model's interpretation is semantically right: a step can be traceable to the text and still misread it.
 
 ### Structured output (AST mode)
 

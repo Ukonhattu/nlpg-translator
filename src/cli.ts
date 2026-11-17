@@ -6,7 +6,7 @@ import { resolveLlmConfig } from "./llmConfig.js";
 
 function usage() {
   console.error(
-    "Usage: nlp2py <file> [--api azure|gateway] [--endpoint <url>] [--model <name>] [--lint] [--separate-blocks] [--ast] [--unsupported <comment|fallback>] [--reasoning <minimal|low|medium|high>] [--verbose] [--strict-output-fidelity]"
+    "Usage: nlp2py <file> [--api azure|gateway] [--endpoint <url>] [--model <name>] [--lint] [--separate-blocks] [--ast] [--unsupported <comment|fallback>] [--reasoning <minimal|low|medium|high>] [--verbose] [--strict-output-fidelity] [--grounding <off|warn|strict>]"
   );
 }
 
@@ -23,6 +23,7 @@ async function main() {
   let reasoningEffort: "minimal" | "low" | "medium" | "high" | undefined;
   let includeDiagnostics = false;
   let strictOutputFidelity = false;
+  let grounding: "off" | "warn" | "strict" | undefined;
   let endpointFlagProvided = false;
 
   for (let i = 0; i < args.length; i++) {
@@ -95,6 +96,17 @@ async function main() {
 
     if (arg === "--strict-output-fidelity") {
       strictOutputFidelity = true;
+      continue;
+    }
+
+    if (arg === "--grounding") {
+      const value = args[i + 1];
+      if (value !== "off" && value !== "warn" && value !== "strict") {
+        console.error("Error: --grounding requires one of 'off', 'warn', 'strict'.");
+        process.exit(1);
+      }
+      grounding = value;
+      i++;
       continue;
     }
 
@@ -174,6 +186,7 @@ async function main() {
     reasoningEffort,
     includeDiagnostics,
     strictOutputFidelity,
+    grounding,
     throwOnFailure: true,
   });
 

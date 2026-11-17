@@ -41,7 +41,17 @@ export type ElifClause = { test: Expr; body: Stmt[] };
 
 export type ExceptHandler = { exc?: string; body: Stmt[] };
 
-export type Stmt =
+/** Version of the AST schema the model is asked to produce (v2 adds evidence/outputCue). */
+export const AST_SCHEMA_VERSION = 2;
+
+/**
+ * Statement nodes. Every statement may carry `evidence`: a verbatim substring of
+ * the cited source line that expresses the step (schema v2). Used only for
+ * grounding checks; it never affects generated code.
+ */
+export type Stmt = StmtNode & { evidence?: string };
+
+type StmtNode =
   | {
       kind: "assign";
       target?: string;
@@ -57,7 +67,7 @@ export type Stmt =
       source: string;
     }
   | { kind: "unpackassign"; targets: string[]; value: Expr; source: string }
-  | { kind: "print"; value: Expr; source: string }
+  | { kind: "print"; value: Expr; source: string; outputCue?: string }
   | {
       kind: "if";
       test: Expr;
@@ -328,6 +338,9 @@ function validateStmtShape(node: any): boolean {
     return false;
   }
   if (!Number.isInteger(node.line) || node.line < 1) return false;
+  // Optional grounding fields: ignore (drop) anything that is not a string.
+  if (node.evidence !== undefined && typeof node.evidence !== "string") delete node.evidence;
+  if (node.outputCue !== undefined && typeof node.outputCue !== "string") delete node.outputCue;
 
   switch (node.kind) {
     case "assign":
@@ -593,7 +606,8 @@ export function verifyStatements(
         sourceLines[(Number.isInteger(node.line) ? node.line : 1) - 1] ?? ""
       );
       if (recovered) {
-        node = { ...recovered, line: node.line };
+        const recoveredLine = sourceLines[(Number.isInteger(node.line) ? node.line : 1) - 1] ?? "";
+        node = { ...recovered, line: node.line, evidence: recoveredLine.trim() };
         if (LOOP_KINDS.has(node.kind)) recoveredHeaders.add(node);
       }
     }
@@ -632,7 +646,10 @@ export function verifyStatements(
       return;
     }
 
-    if (node.kind === "print" && !lineRequestsOutput(node.source)) {
+    // With an explicit `outputCue` the grounding step decides; the verb table is
+    // only the fallback for v1 ASTs (no cue).
+    const hasCue = typeof node.outputCue === "string" && node.outputCue.trim() !== "";
+    if (node.kind === "print" && !hasCue && !lineRequestsOutput(node.source)) {
       if (options.strictOutputFidelity) {
         say(
           "PRINT_OMITTED",

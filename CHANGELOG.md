@@ -32,6 +32,14 @@
 
 ### Additions
 
+- **Evidence-based grounding, AST schema v2 (Phase 5).** `AST_SCHEMA_VERSION = 2`:
+  statements carry `evidence` and `print` carries `outputCue` (prompt
+  `ast.v2`, schema v2). New `grounding: "off" | "warn" | "strict"` option
+  (default `"warn"`, CLI `--grounding`) and `maxStatementsPerLine`; checks live
+  in `src/grounding.ts`, number words in `src/numberWords.ts`. Output gating no
+  longer relies only on the verb table when an `outputCue` is present. v1 ASTs
+  still verify. The `astMode` docs no longer claim a guarantee.
+
 - **Structured output for AST mode (Phase 4).** `structuredOutput: "auto" | "on" | "off"`
   (default `"auto"`) sends the AST JSON Schema (`src/astSchema.ts`) as
   `text.format` (`json_schema`, strict). In `auto`, a schema/format-related

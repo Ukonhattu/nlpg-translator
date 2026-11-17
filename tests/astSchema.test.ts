@@ -3,17 +3,35 @@ import { describe, expect, it } from "vitest";
 import {
   AST_JSON_SCHEMA,
   astResponseFormat,
+  buildAstSchema,
   fillOptionalNulls,
   stripNulls,
 } from "../src/astSchema.js";
+import { AST_SCHEMA_VERSION } from "../src/ast.js";
 import { loadGolden } from "./fixtures/loadGolden.js";
 
 const ajv = new Ajv({ strict: false, allErrors: false });
 const validate = ajv.compile(AST_JSON_SCHEMA);
+const validateV1 = ajv.compile(buildAstSchema(1));
 
 describe("AST JSON schema", () => {
+  it("exports the current schema version", () => {
+    expect(AST_SCHEMA_VERSION).toBe(2);
+  });
+
   it.each(["combined-course-features", "lists-loops"])(
-    "golden fixture %s validates (with strict-mode nulls)",
+    "v1 golden fixture %s validates against the v1 schema only",
+    (name) => {
+      const { raw } = loadGolden(name);
+      const strictShape = fillOptionalNulls(raw);
+      expect(validateV1(strictShape), JSON.stringify(validateV1.errors)).toBe(true);
+      expect(validate(strictShape)).toBe(false); // v2 requires evidence
+      expect(stripNulls(strictShape)).toEqual(raw);
+    }
+  );
+
+  it.each(["combined-course-features.v2", "lists-loops.v2"])(
+    "v2 golden fixture %s validates (with strict-mode nulls)",
     (name) => {
       const { raw } = loadGolden(name);
       const strictShape = fillOptionalNulls(raw);
@@ -38,7 +56,8 @@ describe("AST JSON schema", () => {
     expect(bad({ kind: "bogus", line: 1 })).toBe(false);
     expect(bad({ kind: "break", line: 1, extra: 1 })).toBe(false);
     expect(bad({ kind: "break", line: "1" })).toBe(false);
-    expect(bad({ kind: "break", line: 1 })).toBe(true);
+    expect(bad({ kind: "break", line: 1 })).toBe(false); // v2: evidence required
+    expect(bad({ kind: "break", line: 1, evidence: "break" })).toBe(true);
     expect(bad({ kind: "print", value: { kind: "binop", op: "**", left: { kind: "num", value: 1, raw: null }, right: { kind: "num", value: 1, raw: null } }, line: 1 })).toBe(false);
   });
 

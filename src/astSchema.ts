@@ -23,6 +23,9 @@ const oneOf = (...values: string[]): JsonSchema => ({ type: "string", enum: valu
 const opt = (schema: JsonSchema): Field => ({ schema, optional: true });
 const req = (schema: JsonSchema): Field => ({ schema });
 
+/** Schema version history: 1 = original; 2 = statements carry `evidence` (+ `outputCue` on print). */
+export type AstSchemaVersion = 1 | 2;
+
 const EXPR = ref("Expr");
 const STMT = ref("Stmt");
 const STMTS = arrayOf(STMT);
@@ -54,7 +57,7 @@ const EXPR_SPEC: Record<string, Record<string, Field>> = {
   contains: { left: req(EXPR), right: req(EXPR) },
 };
 
-const STMT_SPEC: Record<string, Record<string, Field>> = {
+const STMT_SPEC_V1: Record<string, Record<string, Field>> = {
   assign: { target: opt(str), targetExpr: opt(EXPR), value: req(EXPR), line: LINE },
   augassign: { target: req(str), op: req(oneOf("+", "-", "*", "/")), value: req(EXPR), line: LINE },
   unpackassign: { targets: req(arrayOf(str)), value: req(EXPR), line: LINE },
@@ -95,6 +98,18 @@ const STMT_SPEC: Record<string, Record<string, Field>> = {
   unknown: { note: opt(str), line: LINE },
 };
 
+function stmtSpec(version: AstSchemaVersion): Record<string, Record<string, Field>> {
+  if (version < 2) return STMT_SPEC_V1;
+  const out: Record<string, Record<string, Field>> = {};
+  for (const [kind, fields] of Object.entries(STMT_SPEC_V1)) {
+    out[kind] = { ...fields, evidence: req(str) };
+    if (kind === "print") out[kind].outputCue = req(str);
+  }
+  return out;
+}
+
+const STMT_SPEC = stmtSpec(2);
+
 /** Auxiliary object shapes (not discriminated by `kind` at the top level). */
 const AUX_SPEC: Record<string, Record<string, Field>> = {
   ElifClause: { test: req(EXPR), body: req(STMTS) },
@@ -130,19 +145,24 @@ function union(spec: Record<string, Record<string, Field>>): JsonSchema {
 
 export const AST_SCHEMA_NAME = "nlpg_ast";
 
-export const AST_JSON_SCHEMA: JsonSchema = {
-  type: "object",
-  properties: { statements: arrayOf(STMT) },
-  required: ["statements"],
-  additionalProperties: false,
-  $defs: {
-    Expr: union(EXPR_SPEC),
-    Stmt: union(STMT_SPEC),
-    FStringPart: union(FSTRING_PART_SPEC),
-    ElifClause: objectSchema(undefined, AUX_SPEC.ElifClause),
-    ExceptHandler: objectSchema(undefined, AUX_SPEC.ExceptHandler),
-  },
-};
+export function buildAstSchema(version: AstSchemaVersion = 2): JsonSchema {
+  return {
+    type: "object",
+    properties: { statements: arrayOf(STMT) },
+    required: ["statements"],
+    additionalProperties: false,
+    $defs: {
+      Expr: union(EXPR_SPEC),
+      Stmt: union(stmtSpec(version)),
+      FStringPart: union(FSTRING_PART_SPEC),
+      ElifClause: objectSchema(undefined, AUX_SPEC.ElifClause),
+      ExceptHandler: objectSchema(undefined, AUX_SPEC.ExceptHandler),
+    },
+  };
+}
+
+/** The current (v2) schema. */
+export const AST_JSON_SCHEMA: JsonSchema = buildAstSchema(2);
 
 /** The `text.format` request parameter for the Responses API. */
 export function astResponseFormat(): Record<string, unknown> {

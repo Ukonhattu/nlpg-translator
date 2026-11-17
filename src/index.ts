@@ -101,12 +101,29 @@ export type TranslateOptions = {
   enableLint?: boolean;
   separateBlocks?: boolean;
   /**
-   * When true, the model transcribes the instructions into an AST which is then
-   * deterministically rendered to Python. This guarantees the generated code
-   * contains nothing that is not present in the source. Defaults to false (the
-   * model writes Python directly).
+   * When true, the model transcribes the instructions into an AST (schema v2,
+   * every step citing its source line with verbatim evidence) which is then
+   * deterministically rendered to Python. The code is verified for shape and
+   * grounded against the text (see `grounding`), which makes unrequested
+   * additions visible or removable. It does NOT guarantee that the model's
+   * reading of the instructions is correct. Defaults to false (the model writes
+   * Python directly).
    */
   astMode?: boolean;
+  /**
+   * AST mode only: how strictly steps are checked against the source text
+   * (evidence, literals, output cues, line coverage; see grounding.ts).
+   *  - "warn" (default): record `GROUNDING_*` diagnostics, keep every step.
+   *  - "strict": replace a step whose evidence, output cue or literals are not
+   *    on the cited line by an `unknown` node (rendered as `# unsupported:`),
+   *    so the block becomes "partial".
+   *  - "off": no grounding checks.
+   * Grounding verifies traceability to the text, not that the interpretation is
+   * semantically correct.
+   */
+  grounding?: "off" | "warn" | "strict";
+  /** AST grounding: max statements citing one line in one scope (default 2). */
+  maxStatementsPerLine?: number;
   /**
    * AST mode only: request the AST as schema-constrained JSON (`text.format`
    * json_schema, strict). "auto" (default) tries it and, if the endpoint rejects
