@@ -155,6 +155,18 @@ The model transcribes the instructions into a JSON AST (schema v2); Python is ge
 
 This makes invented steps, values and prints **visible or removable**. It does **not** check that the model's interpretation is semantically right: a step can be traceable to the text and still misread it.
 
+### Multi-sample consistency (AST mode)
+
+`samples: N` (1–7, default 1) asks the model for N independent ASTs per block (run concurrently, at most 4 at a time). Each is verified and grounded on its own; programs are compared after dropping `evidence`, `outputCue`, `source`, `raw` and notes (line numbers stay). The most frequent program is used; ties go to the sample with the fewest grounding warnings, then the fewest `unknown` steps, then the first. The result gains:
+
+```json
+"consistency": { "samples": 3, "agreement": 0.67, "disagreeingLines": [{ "blockId": "b", "line": 1, "variants": 2 }] }
+```
+
+and a `CONSISTENCY_DISAGREEMENT` warning per line that was read in more than one way ("this step can be read in more than one way"). This library only reports it; showing it to students is up to the host system. Failed samples are ignored (`SAMPLE_FAILED`). `samples` costs N times the tokens and is ignored in direct mode.
+
+Sampling diversity: `temperature` is sent only to the `gateway` backend and only when you set it; gpt-5 models on `azure` ignore or reject it, so it is never sent there.
+
 ### Structured output (AST mode)
 
 In AST mode the request carries a strict JSON Schema for the AST (`text.format`), so the model can only return well-formed nodes. `structuredOutput: "auto"` (default) falls back to plain JSON once if an endpoint (e.g. the vLLM gateway) rejects the schema; use `"off"` to never send it or `"on"` to require it. The schema constrains shape only; line numbers, identifiers and grounding are still checked by verification.

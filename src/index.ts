@@ -27,6 +27,15 @@ export type Diagnostic = {
   message: string;
 };
 
+export type ConsistencyReport = {
+  /** Number of samples requested. */
+  samples: number;
+  /** Share of samples whose program is identical to the chosen one (mean over blocks). */
+  agreement: number;
+  /** Source lines that were read in more than one way. */
+  disagreeingLines: Array<{ blockId: string; line: number; variants: number }>;
+};
+
 export type BlockResult = {
   id: string;
   /**
@@ -55,6 +64,8 @@ export type TranslationResult = {
   diagnostics?: string[];
   /** Structured form of `diagnostics` (same inclusion rule). */
   diagnosticsDetailed?: Diagnostic[];
+  /** AST mode with `samples > 1`: how much the samples agreed. */
+  consistency?: ConsistencyReport;
   /** Per-block results (absent when lint blocked translation). */
   blocks?: BlockResult[];
   /** Worst status across blocks. */
@@ -111,6 +122,22 @@ export type TranslateOptions = {
    */
   astMode?: boolean;
   /**
+   * AST mode only: number of independent AST samples per block (default 1, max
+   * 7). They run concurrently (at most 4 at a time), each is verified and
+   * grounded on its own, and the most frequent program is used (ties: fewest
+   * grounding warnings, then fewest unknown steps, then the first sample).
+   * Lines that were read differently are reported in `consistency` and as
+   * `CONSISTENCY_DISAGREEMENT` diagnostics. Costs `samples` times the tokens.
+   * Ignored in direct mode. Throws a RangeError for values outside 1-7.
+   */
+  samples?: number;
+  /**
+   * Sampling temperature. Sent only to the `gateway` backend and only when set:
+   * gpt-5 reasoning models on `azure` ignore or reject it, so it is never sent
+   * there (use `samples` with their built-in nondeterminism instead).
+   */
+  temperature?: number;
+  /**
    * AST mode only: how strictly steps are checked against the source text
    * (evidence, literals, output cues, line coverage; see grounding.ts).
    *  - "warn" (default): record `GROUNDING_*` diagnostics, keep every step.
@@ -159,12 +186,18 @@ export type TranslateOptions = {
 };
 
 import { lintProgram } from "./linter.js";
-import { translateBlocksDetailed, translateBlocksViaAst } from "./translator.js";
+import {
+  translateBlocksDetailed,
+  translateBlocksViaAst,
+  validateSamples,
+} from "./translator.js";
 
 export async function translateProgram(
   blocks: Block[],
   options: TranslateOptions
 ): Promise<TranslationResult> {
+  validateSamples(options.samples);
+
   if (options.enableLint) {
     const errors = lintProgram(blocks);
     if (errors.length > 0) {
@@ -181,6 +214,7 @@ export async function translateProgram(
     errors: [],
     blocks: outcome.blocks,
     status: outcome.status,
+    ...(outcome.consistency ? { consistency: outcome.consistency } : {}),
   };
   if (options.includeDiagnostics && outcome.diagnostics.length > 0) {
     result.diagnostics = outcome.diagnostics;

@@ -32,6 +32,12 @@
 
 ### Additions
 
+- **Multi-sample consistency (Phase 6).** `samples` (1–7, AST mode),
+  `consistency` result field, `CONSISTENCY_DISAGREEMENT` / `SAMPLE_FAILED`
+  diagnostics, `src/consistency.ts`. `temperature` option (gateway only, only
+  when set; never sent to azure). `samples: 1` behaves exactly as before.
+  Vitest `testTimeout` raised to 30 s for the python-spawning tests.
+
 - **Evidence-based grounding, AST schema v2 (Phase 5).** `AST_SCHEMA_VERSION = 2`:
   statements carry `evidence` and `print` carries `outputCue` (prompt
   `ast.v2`, schema v2). New `grounding: "off" | "warn" | "strict"` option

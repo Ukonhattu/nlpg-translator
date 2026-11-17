@@ -2,6 +2,7 @@ import type {
   Block,
   BlockResult,
   Diagnostic,
+  ConsistencyReport,
   FailureReason,
   TranslateOptions,
   TranslationStatus,
@@ -13,6 +14,11 @@ import {
   type Stmt,
 } from "./ast.js";
 import { astResponseFormat, stripNulls } from "./astSchema.js";
+import {
+  disagreeingLines,
+  selectConsensus,
+  type SampleSummary,
+} from "./consistency.js";
 import { checkGrounding } from "./grounding.js";
 import { AST_PROMPT_V2 } from "./prompts/ast.v2.js";
 import { generatePython, type CodegenDiagnostic } from "./codegen.js";
@@ -58,7 +64,12 @@ function failureMessage(reason: FailureReason, err: unknown): string {
   }
 }
 
-type BlockOutcome = BlockResult & { diagnostics: Diagnostic[]; error?: unknown };
+type BlockOutcome = BlockResult & {
+  diagnostics: Diagnostic[];
+  error?: unknown;
+  /** Present for AST blocks translated with `samples > 1`. */
+  consistency?: { agreement: number; disagreeingLines: Array<{ line: number; variants: number }> };
+};
 
 export type TranslationOutcome = {
   pythonCode: string;
@@ -67,6 +78,7 @@ export type TranslationOutcome = {
   diagnosticsDetailed: Diagnostic[];
   blocks: BlockResult[];
   status: TranslationStatus;
+  consistency?: ConsistencyReport;
 };
 
 function failedOutcome(
@@ -137,12 +149,26 @@ function assemble(outcomes: BlockOutcome[], options: TranslateOptions): Translat
       ...(failureReason ? { failureReason } : {}),
     })
   );
+  const withConsistency = outcomes.filter((o) => o.consistency);
+  const consistency: ConsistencyReport | undefined =
+    withConsistency.length > 0
+      ? {
+          samples: options.samples ?? 1,
+          agreement:
+            withConsistency.reduce((sum, o) => sum + o.consistency!.agreement, 0) /
+            withConsistency.length,
+          disagreeingLines: withConsistency.flatMap((o) =>
+            o.consistency!.disagreeingLines.map((d) => ({ blockId: o.id, ...d }))
+          ),
+        }
+      : undefined;
   return {
     pythonCode: snippets.join("\n\n"),
     diagnostics,
     diagnosticsDetailed,
     blocks,
     status,
+    ...(consistency ? { consistency } : {}),
   };
 }
 
@@ -243,6 +269,8 @@ type LlmCallResult = {
   structuredOutput: "on" | "off";
   /** True when `auto` mode retried without the schema after a 400/422. */
   fellBack: boolean;
+  /** Temperature actually sent (undefined = backend default). */
+  temperature?: number;
 };
 
 async function callLlm(
@@ -268,7 +296,8 @@ async function callLlmDetailed(
     config,
     reasoningEffort,
     options.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS,
-    structured
+    structured,
+    options.temperature
   );
 }
 
@@ -288,7 +317,8 @@ async function callResponses(
   config: ResolvedLlmConfig,
   reasoningEffort: TranslateOptions["reasoningEffort"] | undefined,
   timeoutMs: number,
-  structured?: { mode: "auto" | "on" | "off" }
+  structured?: { mode: "auto" | "on" | "off" },
+  temperature?: number
 ): Promise<LlmCallResult> {
   const body: Record<string, unknown> = {
     model: config.model,
@@ -302,6 +332,12 @@ async function callResponses(
     body.reasoning = { effort: reasoningEffort };
   }
 
+  // gpt-5 reasoning models (azure) ignore or reject `temperature`, so it is never
+  // sent there. The gateway gets it only when the caller sets it.
+  const effectiveTemperature =
+    config.llmApi === "gateway" && temperature !== undefined ? temperature : undefined;
+  if (effectiveTemperature !== undefined) body.temperature = effectiveTemperature;
+
   const mode = structured?.mode ?? "off";
   const useSchema =
     mode === "on" || (mode === "auto" && !structuredUnsupported.has(config.endpoint));
@@ -313,6 +349,7 @@ async function callResponses(
       text: extractResponseText(data),
       structuredOutput: useSchema ? "on" : "off",
       fellBack: false,
+      temperature: effectiveTemperature,
     };
   } catch (err) {
     const schemaRejected =
@@ -328,7 +365,12 @@ async function callResponses(
   // auto mode: retry once without the schema.
   delete body.text;
   const data = await postLlm(config, body, timeoutMs);
-  return { text: extractResponseText(data), structuredOutput: "off", fellBack: true };
+  return {
+    text: extractResponseText(data),
+    structuredOutput: "off",
+    fellBack: true,
+    temperature: effectiveTemperature,
+  };
 }
 
 export const DEFAULT_LLM_TIMEOUT_MS = 60_000;
@@ -576,13 +618,56 @@ function countUnknown(statements: Stmt[]): number {
   return n;
 }
 
-async function translateSingleBlockViaAst(
+/** One verified (and grounded) AST sample, before code generation. */
+type AstSample =
+  | { ok: false; outcome: BlockOutcome }
+  | {
+      ok: true;
+      index: number;
+      statements: Stmt[];
+      diagnostics: Diagnostic[];
+      droppedNodes: number;
+      unknownNodes: number;
+      groundingWarnings: number;
+    };
+
+const MAX_SAMPLES = 7;
+const SAMPLE_CONCURRENCY = 4;
+
+/** Runs `fn` over `items` with at most `limit` calls in flight; keeps result order. */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+export function validateSamples(samples: number | undefined): number {
+  if (samples === undefined) return 1;
+  if (!Number.isInteger(samples) || samples < 1 || samples > MAX_SAMPLES) {
+    throw new RangeError(`samples must be an integer between 1 and ${MAX_SAMPLES}`);
+  }
+  return samples;
+}
+
+async function runAstSample(
   block: Block,
-  options: TranslateOptions
-): Promise<BlockOutcome> {
+  options: TranslateOptions,
+  index: number
+): Promise<AstSample> {
   const numberedSource = block.text
     .split(/\r?\n/)
-    .map((line, index) => `${index + 1}: ${line}`)
+    .map((line, i) => `${i + 1}: ${line}`)
     .join("\n");
 
   const userContent =
@@ -611,20 +696,23 @@ async function translateSingleBlockViaAst(
       });
     }
   } catch (err) {
-    return failedOutcome(block, err);
+    return { ok: false, outcome: failedOutcome(block, err) };
   }
 
   let parsed: any;
   try {
     parsed = parseJsonObject(rawText);
   } catch (err: any) {
-    return failedOutcome(
-      block,
-      new LlmResponseError(
-        "parse_error",
-        `Could not parse model output as JSON: ${err.message ?? String(err)}`
-      )
-    );
+    return {
+      ok: false,
+      outcome: failedOutcome(
+        block,
+        new LlmResponseError(
+          "parse_error",
+          `Could not parse model output as JSON: ${err.message ?? String(err)}`
+        )
+      ),
+    };
   }
 
   // Strict-mode responses use null for absent optional fields.
@@ -652,7 +740,72 @@ async function translateSingleBlockViaAst(
       ...grounded.diagnostics.map((d) => ({ blockId: block.id, ...d }))
     );
   }
-  const unknownNodes = countUnknown(statements);
+
+  return {
+    ok: true,
+    index,
+    statements,
+    diagnostics,
+    droppedNodes: verified.droppedNodes,
+    unknownNodes: countUnknown(statements),
+    groundingWarnings: diagnostics.filter(
+      (d) => d.code.startsWith("GROUNDING_") && d.severity === "warning"
+    ).length,
+  };
+}
+
+async function translateSingleBlockViaAst(
+  block: Block,
+  options: TranslateOptions
+): Promise<BlockOutcome> {
+  const n = validateSamples(options.samples);
+  const samples = await mapWithConcurrency(
+    Array.from({ length: n }, (_v, i) => i),
+    SAMPLE_CONCURRENCY,
+    (i) => runAstSample(block, options, i)
+  );
+
+  const good = samples.filter((s): s is Extract<AstSample, { ok: true }> => s.ok);
+  if (good.length === 0) {
+    return (samples[0] as Extract<AstSample, { ok: false }>).outcome;
+  }
+
+  let chosen = good[0];
+  let consistency: BlockOutcome["consistency"];
+  const extra: Diagnostic[] = [];
+  if (n > 1) {
+    const summaries: SampleSummary[] = good.map((s) => ({
+      index: s.index,
+      statements: s.statements,
+      groundingWarnings: s.groundingWarnings,
+      unknownNodes: s.unknownNodes,
+    }));
+    const { chosen: pick, agreeing } = selectConsensus(summaries);
+    chosen = good.find((s) => s.index === pick.index)!;
+    const lines = disagreeingLines(summaries);
+    consistency = { agreement: agreeing / n, disagreeingLines: lines };
+    samples.forEach((s, i) => {
+      if (s.ok) return;
+      extra.push({
+        blockId: block.id,
+        severity: "warning",
+        code: "SAMPLE_FAILED",
+        message: `Sample ${i + 1} of ${n} failed (${s.outcome.failureReason ?? "error"}) and was ignored.`,
+      });
+    });
+    for (const { line, variants } of lines) {
+      extra.push({
+        blockId: block.id,
+        line,
+        severity: "warning",
+        code: "CONSISTENCY_DISAGREEMENT",
+        message: `Line ${line} was read ${variants} different ways across ${n} samples.`,
+      });
+    }
+  }
+
+  const { statements, droppedNodes, unknownNodes } = chosen;
+  const diagnostics: Diagnostic[] = [...chosen.diagnostics];
 
   // When configured to fall back, hand any block containing constructs the AST
   // cannot represent to the direct (best-effort) translation mode instead of
@@ -672,9 +825,10 @@ async function translateSingleBlockViaAst(
           id: block.id,
           status: "partial",
           pythonCode,
-          droppedNodes: verified.droppedNodes,
+          droppedNodes,
           unknownNodes,
-          diagnostics,
+          diagnostics: [...diagnostics, ...extra],
+          consistency,
         };
       }
     } catch (err) {
@@ -691,26 +845,31 @@ async function translateSingleBlockViaAst(
   const codegenDetailed: CodegenDiagnostic[] = [];
   const pythonCode = generatePython(statements, [], codegenDetailed);
   diagnostics.push(
-    ...codegenDetailed.map((d) => ({ blockId: block.id, ...d }))
+    ...codegenDetailed.map((d) => ({ blockId: block.id, ...d })),
+    ...extra
   );
 
   if (!pythonCode && block.text.trim()) {
-    return failedOutcome(
-      block,
-      new LlmResponseError("empty_response", "Model output contained no usable steps."),
-      diagnostics,
-      { droppedNodes: verified.droppedNodes, unknownNodes }
-    );
+    return {
+      ...failedOutcome(
+        block,
+        new LlmResponseError("empty_response", "Model output contained no usable steps."),
+        diagnostics,
+        { droppedNodes, unknownNodes }
+      ),
+      consistency,
+    };
   }
 
-  const partial = verified.droppedNodes > 0 || unknownNodes > 0;
+  const partial = droppedNodes > 0 || unknownNodes > 0;
   return {
     id: block.id,
     status: partial ? "partial" : "ok",
     pythonCode,
-    droppedNodes: verified.droppedNodes,
+    droppedNodes,
     unknownNodes,
     diagnostics,
+    consistency,
   };
 }
 
