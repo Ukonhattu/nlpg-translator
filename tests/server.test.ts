@@ -221,3 +221,13 @@ describe("server: lintMode", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 });
+
+describe("server: /healthz", () => {
+  it("returns {ok:true} without auth and without calling the LLM", async () => {
+    const app = createApp({ ...baseEnv, HOST: "0.0.0.0", SERVER_AUTH_TOKEN: "s3cret" } as NodeJS.ProcessEnv);
+    const res = await request(app).get("/healthz");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+});

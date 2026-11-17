@@ -85,20 +85,8 @@ export function promoteOrphanPassIntoLoopBodies(statements: Stmt[]): Stmt[] {
     const next = statements[i + 1];
 
     if (loopHasEmptyBody(stmt) && next?.kind === "pass") {
-      switch (stmt.kind) {
-        case "forin":
-          out.push({ ...stmt, body: [next] });
-          break;
-        case "for":
-          out.push({ ...stmt, body: [next] });
-          break;
-        case "while":
-          out.push({ ...stmt, body: [next] });
-          break;
-        case "repeat":
-          out.push({ ...stmt, body: [next] });
-          break;
-      }
+      // loopHasEmptyBody guarantees a for/forin/while/repeat node here.
+      out.push({ ...stmt, body: [next] } as Stmt);
       i++;
       continue;
     }

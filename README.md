@@ -295,13 +295,14 @@ Skipped automatically when the key is unset (CI unit job stays green). A separat
 
 ## Docker
 
-Build TypeScript first, then image:
+The image is built in two stages (`node:22-alpine`): the first compiles TypeScript, the second installs production dependencies only and copies `dist/`. It runs as the non-root `node` user and has a `HEALTHCHECK` against `GET /healthz` (no auth, no LLM call, returns `{"ok":true}`). No local build step is needed.
 
 ```bash
-npm run build
 docker build -t nlpg-translator .
-docker run -e AALTO_API_KEY=... -p 4000:4000 nlpg-translator
+docker run -e AALTO_API_KEY=... -e SERVER_AUTH_TOKEN=... -p 4000:4000 nlpg-translator
 ```
+
+The image sets `HOST=0.0.0.0`, so the server **refuses to start without `SERVER_AUTH_TOKEN`** (see [Security](#security-http-server)). `.dockerignore` keeps `node_modules`, `dist`, `.git`, `.claude`, `.env*`, `tests` and `examples` out of the build context.
 
 ## Examples
 

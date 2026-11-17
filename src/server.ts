@@ -167,6 +167,11 @@ export function createApp(env: NodeJS.ProcessEnv = process.env) {
   app.disable("x-powered-by");
   app.use(express.json({ limit: "64kb" }));
 
+  // Liveness probe for container orchestrators: no auth, no LLM call.
+  app.get("/healthz", (_req: Request, res: Response) => {
+    res.json({ ok: true });
+  });
+
   const requireAuth = (req: Request, res: Response, next: NextFunction) => {
     if (!cfg.authToken) return next();
     const header = req.get("authorization") ?? "";

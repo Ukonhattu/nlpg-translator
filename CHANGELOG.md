@@ -66,6 +66,12 @@
 
 ### Additions
 
+- **Docker and hygiene (Phase 10).** Multi-stage `Dockerfile` (node:22-alpine,
+  `npm ci --omit=dev`, non-root `USER node`, `HEALTHCHECK`), `.dockerignore`,
+  unauthenticated `GET /healthz` (`{"ok":true}`), `.claude/` and `.env.*` in
+  `.gitignore`, and the four identical `case` arms in
+  `promoteOrphanPassIntoLoopBodies` collapsed into one.
+
 - **Tracing and reproducibility (Phase 9).** `trace` callback (`TraceRecord`
   per LLM call and per block result), `traceIncludeInput` (default false, D8),
   `requestId`; CLI `--trace` / `--trace-include-input`. Prompt registry
