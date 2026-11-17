@@ -102,7 +102,7 @@ describe("regressions: float literals (§2.3)", () => {
         }),
       })
     );
-    const { pythonCode } = await translateBlocksViaAst(
+    const { code: pythonCode } = await translateBlocksViaAst(
       [{ id: "b1", text: "Print 10.0" }],
       { aaltoApiKey: "k", endpoint: "https://x.example/r", model: "m" }
     );

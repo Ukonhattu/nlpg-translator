@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import { AST_PROMPT_V2 } from "./ast.v2.js";
 import { DIRECT_PROMPT_V1 } from "./direct.v1.js";
 import { DIRECT_PROMPT_V2 } from "./direct.v2.js";
+import { DIRECT_C_PROMPT_V1 } from "./direct.c.v1.js";
 
 export type PromptInfo = { id: string; text: string; sha256: string };
 
@@ -24,6 +25,7 @@ export const PROMPTS: readonly PromptInfo[] = [
   register(AST_PROMPT_V2),
   register(DIRECT_PROMPT_V1),
   register(DIRECT_PROMPT_V2),
+  register(DIRECT_C_PROMPT_V1),
 ];
 
 export function getPrompt(id: string): PromptInfo {

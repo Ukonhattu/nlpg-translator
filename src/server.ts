@@ -13,6 +13,8 @@ import {
 } from "./index.js";
 import { resolveLlmConfig } from "./llmConfig.js";
 import { LlmHttpError, LlmResponseError } from "./translator.js";
+import { getTarget, isTargetId } from "./targets/registry.js";
+import { TARGET_IDS } from "./targets/types.js";
 
 /**
  * HTTP wrapper around the translator. Intended for internal deployment behind
@@ -158,6 +160,16 @@ function validateBody(body: any, cfg: ServerConfig): { blocks: Block[] } {
   if (body.modelProfile !== undefined && typeof body.modelProfile !== "string") {
     throw new BadRequest("modelProfile must be a string");
   }
+  if (body.target !== undefined && !isTargetId(body.target)) {
+    throw new BadRequest(`target must be one of ${TARGET_IDS.join(", ")}`);
+  }
+  if (
+    body.separateBlocks === true &&
+    body.target !== undefined &&
+    !getTarget(body.target).supportsSeparateBlocks
+  ) {
+    throw new BadRequest(`separateBlocks is not supported for target "${body.target}"`);
+  }
   return { blocks };
 }
 
@@ -236,6 +248,7 @@ export function createApp(env: NodeJS.ProcessEnv = process.env) {
         lintMode: body.lintMode,
         separateBlocks: body.separateBlocks,
         astMode: body.astMode,
+        target: body.target,
         unsupportedBehavior: body.unsupportedBehavior,
         reasoningEffort: body.reasoningEffort,
         includeDiagnostics: body.includeDiagnostics,

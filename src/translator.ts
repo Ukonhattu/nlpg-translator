@@ -21,15 +21,13 @@ import {
 } from "./consistency.js";
 import { checkGrounding } from "./grounding.js";
 import { AST_PROMPT_V2 } from "./prompts/ast.v2.js";
-import { generatePython, type CodegenDiagnostic } from "./codegen.js";
 import {
   postProcessDirect,
   stripCodeFences,
   type DirectPostProcess,
 } from "./direct.js";
-import { DIRECT_PROMPT_V1 } from "./prompts/direct.v1.js";
-import { DIRECT_PROMPT_V2 } from "./prompts/direct.v2.js";
-import { checkPythonSyntax } from "./pythonSyntax.js";
+import { getTarget } from "./targets/registry.js";
+import type { CodegenDiagnostic, TargetId } from "./targets/types.js";
 import { sha256Hex } from "./prompts/index.js";
 import { emitTrace, endpointHost, redactDiagnostics } from "./trace.js";
 import { AST_SCHEMA_VERSION } from "./ast.js";
@@ -83,7 +81,8 @@ type BlockOutcome = BlockResult & {
 };
 
 export type TranslationOutcome = {
-  pythonCode: string;
+  code: string;
+  target: TargetId;
   /** Human-readable diagnostics (always collected; callers decide what to return). */
   diagnostics: string[];
   diagnosticsDetailed: Diagnostic[];
@@ -103,7 +102,7 @@ function failedOutcome(
   return {
     id: block.id,
     status: "failed",
-    pythonCode: "",
+    code: "",
     ...counts,
     failureReason: reason,
     diagnostics: [
@@ -130,14 +129,15 @@ function assemble(outcomes: BlockOutcome[], options: TranslateOptions): Translat
     throw outcomes[0].error ?? new Error("Translation failed");
   }
 
+  const target = getTarget(options.target);
   const marker = options.failedBlockMarker !== false;
   const snippets = outcomes
     .map((o) =>
       o.status === "failed"
         ? marker
-          ? `# [block ${o.id}: translation failed]`
+          ? target.lineComment(`[block ${o.id}: translation failed]`)
           : ""
-        : o.pythonCode
+        : o.code
     )
     .filter(Boolean);
 
@@ -151,10 +151,11 @@ function assemble(outcomes: BlockOutcome[], options: TranslateOptions): Translat
     "ok"
   );
   const blocks: BlockResult[] = outcomes.map(
-    ({ id, status, pythonCode, droppedNodes, unknownNodes, failureReason }) => ({
+    ({ id, status, code, droppedNodes, unknownNodes, failureReason }) => ({
       id,
       status,
-      pythonCode,
+      code,
+      ...(target.id === "python" ? { pythonCode: code } : {}),
       droppedNodes,
       unknownNodes,
       ...(failureReason ? { failureReason } : {}),
@@ -174,7 +175,8 @@ function assemble(outcomes: BlockOutcome[], options: TranslateOptions): Translat
         }
       : undefined;
   return {
-    pythonCode: snippets.join("\n\n"),
+    code: snippets.join("\n\n"),
+    target: target.id,
     diagnostics,
     diagnosticsDetailed,
     blocks,
@@ -197,7 +199,7 @@ export async function translateBlocks(
   blocks: Block[],
   options: TranslateOptions
 ): Promise<string> {
-  return (await translateBlocksDetailed(blocks, options)).pythonCode;
+  return (await translateBlocksDetailed(blocks, options)).code;
 }
 
 /** Direct mode with per-block status. */
@@ -230,7 +232,7 @@ async function translateDirectBlock(
       id: block.id,
       // A syntax error means the code is not fully usable: report it as partial.
       status: result.syntaxErrors > 0 ? "partial" : "ok",
-      pythonCode: code,
+      code,
       droppedNodes: 0,
       unknownNodes: 0,
       diagnostics: result.diagnostics,
@@ -250,10 +252,11 @@ async function translateSingleBlock(
   block: Block,
   options: TranslateOptions
 ): Promise<DirectResult> {
-  const prompt = options.promptVersion === "v1" ? DIRECT_PROMPT_V1 : DIRECT_PROMPT_V2;
+  const target = getTarget(options.target);
+  const prompt = target.direct.prompt(options.promptVersion);
 
   const userContent =
-    "Translate the following block into Python. " +
+    `Translate the following block into ${target.direct.languageName}. ` +
     "Preserve the logical structure and order of steps, using simple code suitable for beginners. " +
     "Add nothing that is not explicitly stated in the instructions.\n\n" +
     block.text;
@@ -267,7 +270,7 @@ async function translateSingleBlock(
     { blockId: block.id, mode: "direct", inputText: block.text }
   );
 
-  const processed = postProcessDirect(rawText, block.text, options.directPostProcess);
+  const processed = target.direct.postProcess(rawText, block.text, options.directPostProcess);
   const diagnostics: Diagnostic[] = [];
 
   if (processed.emittedPrints > processed.requestedOutputLines) {
@@ -275,13 +278,13 @@ async function translateSingleBlock(
       blockId: block.id,
       severity: "warning",
       code: "DIRECT_EXTRA_PRINTS",
-      message: `The model emitted ${processed.emittedPrints} print() call(s) but only ${processed.requestedOutputLines} source line(s) ask for output.`,
+      message: `The model emitted ${processed.emittedPrints} ${target.direct.outputCallName} call(s) but only ${processed.requestedOutputLines} source line(s) ask for output.`,
     });
   }
 
   let syntaxErrors = 0;
   if (options.directParseCheck !== false && processed.code) {
-    const problems = await checkPythonSyntax(processed.code);
+    const problems = await target.direct.checkSyntax(processed.code);
     for (const p of problems ?? []) {
       syntaxErrors++;
       diagnostics.push({
@@ -317,7 +320,7 @@ type TraceCtx = {
 
 function promptFor(mode: "direct" | "ast", options: TranslateOptions) {
   if (mode === "ast") return AST_PROMPT_V2;
-  return options.promptVersion === "v1" ? DIRECT_PROMPT_V1 : DIRECT_PROMPT_V2;
+  return getTarget(options.target).direct.prompt(options.promptVersion);
 }
 
 /** Ensures one requestId is shared by every record of a translation. */
@@ -353,6 +356,7 @@ function traceBlockResult(
     requestId: options.requestId ?? "",
     blockId: block.id,
     mode,
+    target: getTarget(options.target).id,
     promptId: prompt.id,
     promptSha256: sha256Hex(prompt.text),
     ...(mode === "ast" ? { astSchemaVersion: AST_SCHEMA_VERSION } : {}),
@@ -360,7 +364,7 @@ function traceBlockResult(
     reasoningEffort: options.reasoningEffort ?? "low",
     temperature: effectiveTemperature(options),
     inputSha256: sha256Hex(block.text),
-    ...(includeInput ? { inputText: block.text, finalCode: outcome.pythonCode } : {}),
+    ...(includeInput ? { inputText: block.text, finalCode: outcome.code } : {}),
     diagnostics: redactDiagnostics(outcome.diagnostics, includeInput),
     status: outcome.status,
     ...(outcome.failureReason ? { error: outcome.failureReason } : {}),
@@ -402,6 +406,7 @@ async function callLlmDetailed(
       requestId: options.requestId ?? "",
       blockId: ctx.blockId,
       mode: ctx.mode,
+      target: getTarget(options.target).id,
       ...(ctx.sampleIndex !== undefined ? { sampleIndex: ctx.sampleIndex } : {}),
       promptId: prompt.id,
       promptSha256: sha256Hex(prompt.text),
@@ -835,17 +840,24 @@ async function translateSingleBlockViaAst(
     }
   }
 
-  const { statements, droppedNodes, unknownNodes } = chosen;
+  const { statements, droppedNodes } = chosen;
   const diagnostics: Diagnostic[] = [...chosen.diagnostics];
 
+  // Code generation first: a target may be unable to express constructs the
+  // AST can represent (e.g. try/except in C). Those count like `unknown` nodes.
+  const target = getTarget(options.target);
+  const codegenDetailed: CodegenDiagnostic[] = [];
+  const generated = target.generate(statements, codegenDetailed);
+  const unknownNodes = chosen.unknownNodes + generated.unsupportedNodes;
+
   // When configured to fall back, hand any block containing constructs the AST
-  // cannot represent to the direct (best-effort) translation mode instead of
-  // emitting `# unsupported:` comments.
+  // (or the target) cannot represent to the direct (best-effort) translation
+  // mode instead of emitting `unsupported` comments.
   if (options.unsupportedBehavior === "fallback" && unknownNodes > 0) {
     try {
       const direct = await translateSingleBlock(block, options);
-      const pythonCode = direct.code.trim();
-      if (pythonCode) {
+      const code = direct.code.trim();
+      if (code) {
         diagnostics.push(...direct.diagnostics, {
           blockId: block.id,
           severity: "info",
@@ -856,7 +868,7 @@ async function translateSingleBlockViaAst(
         return {
           id: block.id,
           status: "partial",
-          pythonCode,
+          code,
           droppedNodes,
           unknownNodes,
           diagnostics: [...diagnostics, ...extra],
@@ -874,14 +886,13 @@ async function translateSingleBlockViaAst(
     }
   }
 
-  const codegenDetailed: CodegenDiagnostic[] = [];
-  const pythonCode = generatePython(statements, [], codegenDetailed);
+  const code = generated.code;
   diagnostics.push(
     ...codegenDetailed.map((d) => ({ blockId: block.id, ...d })),
     ...extra
   );
 
-  if (!pythonCode && block.text.trim()) {
+  if (!code && block.text.trim()) {
     return {
       ...failedOutcome(
         block,
@@ -897,7 +908,7 @@ async function translateSingleBlockViaAst(
   return {
     id: block.id,
     status: partial ? "partial" : "ok",
-    pythonCode,
+    code,
     droppedNodes,
     unknownNodes,
     diagnostics,

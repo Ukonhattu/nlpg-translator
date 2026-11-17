@@ -7,6 +7,8 @@ import { describe, expect, it } from "vitest";
 import type { Expr, Stmt } from "../src/ast.js";
 import { generatePython } from "../src/codegen.js";
 import { hasPython, assertParses } from "./helpers/python.js";
+import { generateC } from "../src/targets/c/codegen.js";
+import { assertCompiles, hasCC, LENIENT_FLAGS } from "./helpers/c.js";
 
 const idents = fc.constantFrom(
   "x", "total", "class", "def", "list", "sum", "määrä", "myList", "MyList", "x2", "my var"
@@ -115,4 +117,21 @@ describe("codegen property test", () => {
       { numRuns: 300 }
     );
   });
+});
+
+describe("C codegen property test", () => {
+  // Arbitrary ASTs are mostly ill-typed (e.g. "abc" - True). Whatever C cannot
+  // type must become an `unsupported` comment; what is emitted must compile.
+  (hasCC ? it : it.skip)("generateC never throws and always emits compilable C", () => {
+    fc.assert(
+      fc.property(fc.array(stmt(3), { minLength: 1, maxLength: 4 }), (stmts) => {
+        const { code } = generateC(structuredClone(stmts));
+        expect(code).toMatch(/int main\(void\)/);
+        // Random ASTs contain meaningless constant expressions (false - true,
+        // x % !10.0) that compilers flag; real programs do not.
+        assertCompiles(code, [...LENIENT_FLAGS, "-Wno-constant-logical-operand", "-Wno-division-by-zero", "-Wno-tautological-constant-compare", "-Wno-tautological-constant-out-of-range-compare"]);
+      }),
+      { numRuns: 150 }
+    );
+  }, 120_000);
 });

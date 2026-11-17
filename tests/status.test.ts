@@ -139,7 +139,7 @@ describe("block status (§3.3)", () => {
     const r = await translateProgram([{ id: "b1", text: "Let a be 1." }], { ...opts, astMode: true });
     expect(r.status).toBe("ok");
     expect(r.blocks).toEqual([
-      { id: "b1", status: "ok", pythonCode: "a = 1", droppedNodes: 0, unknownNodes: 0 },
+      { id: "b1", status: "ok", code: "a = 1", pythonCode: "a = 1", droppedNodes: 0, unknownNodes: 0 },
     ]);
   });
 
