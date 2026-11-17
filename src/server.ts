@@ -12,7 +12,7 @@ import {
   type TranslateOptions,
 } from "./index.js";
 import { resolveLlmConfig } from "./llmConfig.js";
-import { LlmHttpError } from "./translator.js";
+import { LlmHttpError, LlmResponseError } from "./translator.js";
 
 /**
  * HTTP wrapper around the translator. Intended for internal deployment behind
@@ -221,6 +221,7 @@ export function createApp(env: NodeJS.ProcessEnv = process.env) {
         endpoint: resolved.endpoint,
         model: resolved.model,
         timeoutMs: cfg.timeoutMs,
+        throwOnFailure: true,
         enableLint: body.enableLint,
         separateBlocks: body.separateBlocks,
         astMode: body.astMode,
@@ -241,7 +242,7 @@ export function createApp(env: NodeJS.ProcessEnv = process.env) {
       if (err?.name === "TimeoutError" || err?.name === "AbortError") {
         return res.status(504).json({ error: "upstream LLM timed out", requestId });
       }
-      if (err instanceof LlmHttpError) {
+      if (err instanceof LlmHttpError || err instanceof LlmResponseError) {
         return res.status(502).json({ error: "upstream LLM request failed", requestId });
       }
       res.status(500).json({ error: "internal error", requestId });

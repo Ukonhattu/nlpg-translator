@@ -10,7 +10,42 @@ export type LintError = {
   location?: { line: number; column?: number };
 };
 
+export type TranslationStatus = "ok" | "partial" | "failed";
+
+export type FailureReason =
+  | "parse_error"
+  | "incomplete_response"
+  | "empty_response"
+  | "http_error"
+  | "timeout";
+
+export type Diagnostic = {
+  blockId: string;
+  line?: number;
+  severity: "info" | "warning" | "error";
+  code: string;
+  message: string;
+};
+
+export type BlockResult = {
+  id: string;
+  /**
+   * "ok": fully translated. "partial": some nodes were dropped or are `unknown`.
+   * "failed": no usable code (see failureReason).
+   */
+  status: TranslationStatus;
+  /** This block's own code (empty when failed). */
+  pythonCode: string;
+  droppedNodes: number;
+  unknownNodes: number;
+  failureReason?: FailureReason;
+};
+
 export type TranslationResult = {
+  /**
+   * Generated code. A failed block contributes `# [block <id>: translation
+   * failed]` unless `failedBlockMarker` is false.
+   */
   pythonCode: string;
   errors: LintError[];
   /**
@@ -18,6 +53,12 @@ export type TranslationResult = {
    * includeDiagnostics is true — intended for teachers/debugging, not students.
    */
   diagnostics?: string[];
+  /** Structured form of `diagnostics` (same inclusion rule). */
+  diagnosticsDetailed?: Diagnostic[];
+  /** Per-block results (absent when lint blocked translation). */
+  blocks?: BlockResult[];
+  /** Worst status across blocks. */
+  status?: TranslationStatus;
 };
 
 import type { LlmApi } from "./llmConfig.js";
@@ -46,6 +87,15 @@ export type TranslateOptions = {
   aaltoEndpoint?: string;
   /** @deprecated Use `model`. */
   aaltoModel?: string;
+  /**
+   * When true, translateProgram rejects (with the first block's original error)
+   * if EVERY block fails. By default failures are reported per block instead.
+   */
+  throwOnFailure?: boolean;
+  /**
+   * Emit `# [block <id>: translation failed]` for failed blocks (default true).
+   */
+  failedBlockMarker?: boolean;
   /** Timeout for each LLM HTTP request in milliseconds (default 60000). */
   timeoutMs?: number;
   enableLint?: boolean;
@@ -85,7 +135,7 @@ export type TranslateOptions = {
 };
 
 import { lintProgram } from "./linter.js";
-import { translateBlocks, translateBlocksViaAst } from "./translator.js";
+import { translateBlocksDetailed, translateBlocksViaAst } from "./translator.js";
 
 export async function translateProgram(
   blocks: Block[],
@@ -98,18 +148,19 @@ export async function translateProgram(
     }
   }
 
-  if (options.astMode) {
-    const { pythonCode, diagnostics } = await translateBlocksViaAst(
-      blocks,
-      options
-    );
-    const result: TranslationResult = { pythonCode, errors: [] };
-    if (options.includeDiagnostics && diagnostics.length > 0) {
-      result.diagnostics = diagnostics;
-    }
-    return result;
-  }
+  const outcome = options.astMode
+    ? await translateBlocksViaAst(blocks, options)
+    : await translateBlocksDetailed(blocks, options);
 
-  const pythonCode = await translateBlocks(blocks, options);
-  return { pythonCode, errors: [] };
+  const result: TranslationResult = {
+    pythonCode: outcome.pythonCode,
+    errors: [],
+    blocks: outcome.blocks,
+    status: outcome.status,
+  };
+  if (options.includeDiagnostics && outcome.diagnostics.length > 0) {
+    result.diagnostics = outcome.diagnostics;
+    result.diagnosticsDetailed = outcome.diagnosticsDetailed;
+  }
+  return result;
 }

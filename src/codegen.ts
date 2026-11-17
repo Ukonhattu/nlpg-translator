@@ -14,8 +14,15 @@ const INDENT = "    ";
 
 // --- emit context (diagnostics + identifier collision tracking) ---------------
 
+export type CodegenDiagnostic = {
+  severity: "info" | "warning";
+  code: string;
+  message: string;
+};
+
 type EmitContext = {
   diagnostics: string[];
+  detailed?: CodegenDiagnostic[];
   /** emitted identifier -> distinct source names that mapped to it */
   names: Map<string, Set<string>>;
   warnedBuiltins: Set<string>;
@@ -23,8 +30,11 @@ type EmitContext = {
 
 let ctx: EmitContext | null = null;
 
-function note(message: string): void {
-  if (ctx && !ctx.diagnostics.includes(message)) ctx.diagnostics.push(message);
+function note(code: string, message: string): void {
+  if (ctx && !ctx.diagnostics.includes(message)) {
+    ctx.diagnostics.push(message);
+    ctx.detailed?.push({ severity: "warning", code, message });
+  }
 }
 
 function ident(name: string, role: IdentifierRole, binding = false): string {
@@ -37,13 +47,17 @@ function ident(name: string, role: IdentifierRole, binding = false): string {
       seen.add(source);
       if (seen.size > 1) {
         note(
+          "NAME_COLLISION",
           `Names ${[...seen].map((s) => JSON.stringify(s)).join(" and ")} both map to the Python identifier '${id}'.`
         );
       }
     }
     if (binding && SHADOWABLE_BUILTINS.has(id) && !ctx.warnedBuiltins.has(id)) {
       ctx.warnedBuiltins.add(id);
-      note(`'${id}' is assigned or defined, which shadows the Python built-in of the same name.`);
+      note(
+        "BUILTIN_SHADOWED",
+        `'${id}' is assigned or defined, which shadows the Python built-in of the same name.`
+      );
     }
   }
   return id;
@@ -147,6 +161,7 @@ function emitFstring(parts: FStringPart[], c: ExprCtx): Emitted {
     if (!(err instanceof FStringUnsafe)) throw err;
   }
   note(
+    "FSTRING_FALLBACK",
     "An f-string contained text that Python 3.10 cannot express inside {...}; it was written as string concatenation instead."
   );
   const pieces = parts.map((part) =>
@@ -392,10 +407,11 @@ export function emitStmt(stmt: Stmt, indent = ""): string[] {
  */
 export function generatePython(
   statements: Stmt[],
-  diagnostics: string[] = []
+  diagnostics: string[] = [],
+  detailed?: CodegenDiagnostic[]
 ): string {
   const previous = ctx;
-  ctx = { diagnostics, names: new Map(), warnedBuiltins: new Set() };
+  ctx = { diagnostics, detailed, names: new Map(), warnedBuiltins: new Set() };
   try {
     return statements.flatMap((stmt) => emitStmt(stmt, "")).join("\n").trim();
   } finally {

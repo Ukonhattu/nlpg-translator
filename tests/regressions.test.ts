@@ -1,10 +1,9 @@
 /**
  * Regression tests for confirmed bugs from CODE_REVIEW.md (see FIX_PLAN.md, Phase 0.3).
  *
- * Each test is written to assert the CORRECT behaviour and is marked `it.fails`
- * while the bug is still present. When a fix lands, change its `bug(...)` to
- * `fixed(...)`; vitest reports a passing `it.fails` as an error, which is the
- * reminder to do so.
+ * Each test asserts the CORRECT behaviour. For a bug that is not fixed yet,
+ * declare it with `it.fails` (vitest reports a passing `it.fails` as an error,
+ * which is the reminder to flip it back to a normal test).
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { verifyProgram } from "../src/ast.js";
@@ -17,8 +16,6 @@ import {
   runPython,
 } from "./helpers/python.js";
 
-/** A test for a bug that is not fixed yet (expected to fail). */
-const bug = it.fails;
 /** A fixed bug whose check needs python3 (skipped when it is missing). */
 const fixed = hasPython ? it : it.skip;
 
@@ -169,11 +166,11 @@ describe("regressions: f-strings on Python 3.10 (§2.4)", () => {
 });
 
 describe("regressions: malformed model output (§3.1, §3.2)", () => {
-  bug("a null statement does not throw (§3.1)", () => {
+  it("a null statement does not throw (§3.1)", () => {
     expect(() => verifyProgram({ statements: [null] }, "x")).not.toThrow();
   });
 
-  bug("a null node inside a nested body does not throw (§3.1)", () => {
+  it("a null node inside a nested body does not throw (§3.1)", () => {
     const raw = {
       statements: [
         { kind: "while", test: { kind: "bool", value: true }, line: 1, body: [null] },
@@ -182,7 +179,7 @@ describe("regressions: malformed model output (§3.1, §3.2)", () => {
     expect(() => verifyProgram(raw, "While true")).not.toThrow();
   });
 
-  bug("statement missing `line` is reported even without collectDiagnostics (§3.2)", () => {
+  it("statement missing `line` is reported even without collectDiagnostics (§3.2)", () => {
     const { diagnostics } = verifyProgram(
       { statements: [{ kind: "break" }] },
       "Break"

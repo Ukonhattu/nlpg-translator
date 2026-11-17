@@ -1,30 +1,197 @@
-import type { Block, TranslateOptions } from "./index.js";
+import type {
+  Block,
+  BlockResult,
+  Diagnostic,
+  FailureReason,
+  TranslateOptions,
+  TranslationStatus,
+} from "./index.js";
 import { resolveLlmConfig, type ResolvedLlmConfig } from "./llmConfig.js";
 import {
-  statementsContainUnknown,
+  childStatementLists,
   verifyProgram,
+  type Stmt,
 } from "./ast.js";
-import { generatePython } from "./codegen.js";
+import { generatePython, type CodegenDiagnostic } from "./codegen.js";
 import { countRequestedPrints } from "./outputVerbs.js";
+
+/** The model's response could not be used (unparseable, incomplete or empty). */
+export class LlmResponseError extends Error {
+  constructor(
+    readonly reason: Extract<
+      FailureReason,
+      "parse_error" | "incomplete_response" | "empty_response"
+    >,
+    message: string
+  ) {
+    super(message);
+    this.name = "LlmResponseError";
+  }
+}
+
+/** Maps an error to a block failure reason; `undefined` means "not ours, rethrow". */
+function classifyFailure(err: unknown): FailureReason | undefined {
+  if (err instanceof LlmResponseError) return err.reason;
+  if (err instanceof LlmHttpError) return "http_error";
+  const name = (err as { name?: string } | null)?.name;
+  if (name === "TimeoutError" || name === "AbortError") return "timeout";
+  if (err instanceof TypeError && /fetch failed/i.test(err.message)) {
+    return "http_error";
+  }
+  return undefined;
+}
+
+/** A failure message that never contains an upstream response body. */
+function failureMessage(reason: FailureReason, err: unknown): string {
+  switch (reason) {
+    case "http_error":
+      return err instanceof LlmHttpError
+        ? `LLM request failed (HTTP ${err.status}).`
+        : "LLM request failed (network error).";
+    case "timeout":
+      return "LLM request timed out.";
+    default:
+      return (err as Error)?.message ?? reason;
+  }
+}
+
+type BlockOutcome = BlockResult & { diagnostics: Diagnostic[]; error?: unknown };
+
+export type TranslationOutcome = {
+  pythonCode: string;
+  /** Human-readable diagnostics (always collected; callers decide what to return). */
+  diagnostics: string[];
+  diagnosticsDetailed: Diagnostic[];
+  blocks: BlockResult[];
+  status: TranslationStatus;
+};
+
+function failedOutcome(
+  block: Block,
+  err: unknown,
+  extra: Diagnostic[] = [],
+  counts: { droppedNodes: number; unknownNodes: number } = { droppedNodes: 0, unknownNodes: 0 }
+): BlockOutcome {
+  const reason = classifyFailure(err);
+  if (!reason) throw err;
+  return {
+    id: block.id,
+    status: "failed",
+    pythonCode: "",
+    ...counts,
+    failureReason: reason,
+    diagnostics: [
+      ...extra,
+      {
+        blockId: block.id,
+        severity: "error",
+        code: `BLOCK_${reason.toUpperCase()}`,
+        message: failureMessage(reason, err),
+      },
+    ],
+    error: err,
+  };
+}
+
+const STATUS_RANK: Record<TranslationStatus, number> = { ok: 0, partial: 1, failed: 2 };
+
+function assemble(outcomes: BlockOutcome[], options: TranslateOptions): TranslationOutcome {
+  if (
+    options.throwOnFailure &&
+    outcomes.length > 0 &&
+    outcomes.every((o) => o.status === "failed")
+  ) {
+    throw outcomes[0].error ?? new Error("Translation failed");
+  }
+
+  const marker = options.failedBlockMarker !== false;
+  const snippets = outcomes
+    .map((o) =>
+      o.status === "failed"
+        ? marker
+          ? `# [block ${o.id}: translation failed]`
+          : ""
+        : o.pythonCode
+    )
+    .filter(Boolean);
+
+  const prefix = Boolean(options.separateBlocks);
+  const diagnosticsDetailed = outcomes.flatMap((o) => o.diagnostics);
+  const diagnostics = outcomes.flatMap((o) =>
+    o.diagnostics.map((d) => (prefix ? `[${o.id}] ${d.message}` : d.message))
+  );
+  const status = outcomes.reduce<TranslationStatus>(
+    (worst, o) => (STATUS_RANK[o.status] > STATUS_RANK[worst] ? o.status : worst),
+    "ok"
+  );
+  const blocks: BlockResult[] = outcomes.map(
+    ({ id, status, pythonCode, droppedNodes, unknownNodes, failureReason }) => ({
+      id,
+      status,
+      pythonCode,
+      droppedNodes,
+      unknownNodes,
+      ...(failureReason ? { failureReason } : {}),
+    })
+  );
+  return {
+    pythonCode: snippets.join("\n\n"),
+    diagnostics,
+    diagnosticsDetailed,
+    blocks,
+    status,
+  };
+}
+
+function blocksToTranslate(blocks: Block[], options: TranslateOptions): Block[] {
+  if (options.separateBlocks) return blocks;
+  return [
+    {
+      id: blocks.map((block) => block.id).join(",") || "combined",
+      text: blocks.map((block) => block.text).join("\n\n"),
+    },
+  ];
+}
 
 export async function translateBlocks(
   blocks: Block[],
   options: TranslateOptions
 ): Promise<string> {
-  if (!options.separateBlocks) {
-    const combinedBlock: Block = {
-      id: blocks.map((block) => block.id).join(",") || "combined",
-      text: blocks.map((block) => block.text).join("\n\n"),
-    };
-    return (await translateSingleBlock(combinedBlock, options)).trim();
-  }
+  return (await translateBlocksDetailed(blocks, options)).pythonCode;
+}
 
-  const snippets: string[] = [];
-  for (const block of blocks) {
-    const code = await translateSingleBlock(block, options);
-    snippets.push(code.trim());
+/** Direct mode with per-block status. */
+export async function translateBlocksDetailed(
+  blocks: Block[],
+  options: TranslateOptions
+): Promise<TranslationOutcome> {
+  const outcomes: BlockOutcome[] = [];
+  for (const block of blocksToTranslate(blocks, options)) {
+    outcomes.push(await translateDirectBlock(block, options));
   }
-  return snippets.filter(Boolean).join("\n\n");
+  return assemble(outcomes, options);
+}
+
+async function translateDirectBlock(
+  block: Block,
+  options: TranslateOptions
+): Promise<BlockOutcome> {
+  try {
+    const code = (await translateSingleBlock(block, options)).trim();
+    if (!code && block.text.trim()) {
+      throw new LlmResponseError("empty_response", "Model returned no code.");
+    }
+    return {
+      id: block.id,
+      status: "ok",
+      pythonCode: code,
+      droppedNodes: 0,
+      unknownNodes: 0,
+      diagnostics: [],
+    };
+  } catch (err) {
+    return failedOutcome(block, err);
+  }
 }
 
 async function translateSingleBlock(
@@ -142,29 +309,42 @@ async function postLlm(
 }
 
 export function extractResponseText(data: any): string {
-  // Aalto uses OpenAI Responses API format. We want the assistant's text only.
-  // Example: data.output is an array; we find the message with type "message",
-  // then its content item with type "output_text" and read .text.
-  if (Array.isArray(data.output)) {
-    const msg = data.output.find((item: any) => item.type === "message");
-    if (msg && Array.isArray(msg.content)) {
-      const textItem = msg.content.find(
-        (c: any) => c.type === "output_text" && typeof c.text === "string"
-      );
-      if (textItem) {
-        return textItem.text as string;
-      }
-    }
+  // OpenAI Responses API: output[] items of type "message" hold content[] parts
+  // of type "output_text". Concatenate ALL text parts of ALL messages.
+  if (data?.status === "incomplete") {
+    const why = data.incomplete_details?.reason;
+    throw new LlmResponseError(
+      "incomplete_response",
+      `Model response was incomplete${why ? ` (${why})` : ""}.`
+    );
   }
 
-  // Fallback: try a few generic locations, otherwise dump JSON as string.
-  const fallback =
-    data.output?.[0]?.content?.[0]?.text ||
-    data.output?.[0]?.content ||
-    data.text ||
-    JSON.stringify(data);
+  const messages: string[] = [];
+  let refused = false;
+  if (Array.isArray(data?.output)) {
+    for (const item of data.output) {
+      if (item?.type !== "message" || !Array.isArray(item.content)) continue;
+      let text = "";
+      for (const part of item.content) {
+        if (part?.type === "output_text" && typeof part.text === "string") {
+          text += part.text;
+        } else if (part?.type === "refusal") {
+          refused = true;
+        }
+      }
+      if (text) messages.push(text);
+    }
+  }
+  if (messages.length === 0 && typeof data?.output_text === "string") {
+    messages.push(data.output_text);
+  }
 
-  return typeof fallback === "string" ? fallback : String(fallback ?? "");
+  const joined = messages.join("\n");
+  if (joined.trim()) return joined;
+  throw new LlmResponseError(
+    "empty_response",
+    refused ? "Model refused to answer." : "Model response contained no text."
+  );
 }
 
 /**
@@ -316,10 +496,7 @@ function isSoleBlockBody(lines: string[], idx: number): boolean {
 // statements; any node not grounded in the source is dropped during verify.
 // ---------------------------------------------------------------------------
 
-export type AstTranslationResult = {
-  pythonCode: string;
-  diagnostics: string[];
-};
+export type AstTranslationResult = TranslationOutcome;
 
 const AST_SYSTEM_PROMPT = `You are a parser. Convert beginner-friendly natural language programming instructions into a JSON Abstract Syntax Tree (AST). You DO NOT write Python. Map English and Finnish course phrasing to the same AST.
 
@@ -379,31 +556,26 @@ export async function translateBlocksViaAst(
   blocks: Block[],
   options: TranslateOptions
 ): Promise<AstTranslationResult> {
-  if (!options.separateBlocks) {
-    const combined: Block = {
-      id: blocks.map((block) => block.id).join(",") || "combined",
-      text: blocks.map((block) => block.text).join("\n\n"),
-    };
-    return translateSingleBlockViaAst(combined, options);
+  const outcomes: BlockOutcome[] = [];
+  for (const block of blocksToTranslate(blocks, options)) {
+    outcomes.push(await translateSingleBlockViaAst(block, options));
   }
+  return assemble(outcomes, options);
+}
 
-  const snippets: string[] = [];
-  const diagnostics: string[] = [];
-  for (const block of blocks) {
-    const { pythonCode, diagnostics: blockDiagnostics } =
-      await translateSingleBlockViaAst(block, options);
-    if (pythonCode) snippets.push(pythonCode);
-    diagnostics.push(
-      ...blockDiagnostics.map((d) => `[${block.id}] ${d}`)
-    );
+function countUnknown(statements: Stmt[]): number {
+  let n = 0;
+  for (const stmt of statements) {
+    if (stmt.kind === "unknown") n++;
+    for (const body of childStatementLists(stmt)) n += countUnknown(body);
   }
-  return { pythonCode: snippets.join("\n\n"), diagnostics };
+  return n;
 }
 
 async function translateSingleBlockViaAst(
   block: Block,
   options: TranslateOptions
-): Promise<AstTranslationResult> {
+): Promise<BlockOutcome> {
   const numberedSource = block.text
     .split(/\r?\n/)
     .map((line, index) => `${index + 1}: ${line}`)
@@ -414,48 +586,99 @@ async function translateSingleBlockViaAst(
     "Cite each node's origin with its line number. Output only the JSON object.\n\n" +
     numberedSource;
 
-  const rawText = await callLlm(
-    AST_SYSTEM_PROMPT,
-    userContent,
-    options,
-    options.reasoningEffort ?? "low"
-  );
+  let rawText: string;
+  try {
+    rawText = await callLlm(
+      AST_SYSTEM_PROMPT,
+      userContent,
+      options,
+      options.reasoningEffort ?? "low"
+    );
+  } catch (err) {
+    return failedOutcome(block, err);
+  }
 
   let parsed: any;
   try {
     parsed = parseJsonObject(rawText);
   } catch (err: any) {
-    const diagnostics = options.includeDiagnostics
-      ? [`Could not parse model output as JSON: ${err.message ?? String(err)}`]
-      : [];
-    return { pythonCode: "", diagnostics };
+    return failedOutcome(
+      block,
+      new LlmResponseError(
+        "parse_error",
+        `Could not parse model output as JSON: ${err.message ?? String(err)}`
+      )
+    );
   }
 
-  const { statements, diagnostics } = verifyProgram(parsed, block.text, {
+  const verified = verifyProgram(parsed, block.text, {
     strictOutputFidelity: options.strictOutputFidelity,
-    collectDiagnostics: options.includeDiagnostics,
   });
+  const { statements } = verified;
+  const diagnostics: Diagnostic[] = verified.diagnosticsDetailed.map((d) => ({
+    blockId: block.id,
+    ...d,
+  }));
+  const unknownNodes = countUnknown(statements);
 
   // When configured to fall back, hand any block containing constructs the AST
   // cannot represent to the direct (best-effort) translation mode instead of
   // emitting `# unsupported:` comments.
-  if (options.unsupportedBehavior === "fallback" && statementsContainUnknown(statements)) {
-    const pythonCode = await translateSingleBlock(block, options);
-    const fallbackNote =
-      "Block contained unsupported construct(s); fell back to direct best-effort translation.";
-    return {
-      pythonCode,
-      diagnostics: options.includeDiagnostics
-        ? [...diagnostics, fallbackNote]
-        : diagnostics,
-    };
+  if (options.unsupportedBehavior === "fallback" && unknownNodes > 0) {
+    try {
+      const pythonCode = (await translateSingleBlock(block, options)).trim();
+      if (pythonCode) {
+        diagnostics.push({
+          blockId: block.id,
+          severity: "info",
+          code: "FALLBACK_TO_DIRECT",
+          message:
+            "Block contained unsupported construct(s); fell back to direct best-effort translation.",
+        });
+        return {
+          id: block.id,
+          status: "partial",
+          pythonCode,
+          droppedNodes: verified.droppedNodes,
+          unknownNodes,
+          diagnostics,
+        };
+      }
+    } catch (err) {
+      if (!classifyFailure(err)) throw err;
+      diagnostics.push({
+        blockId: block.id,
+        severity: "warning",
+        code: "FALLBACK_FAILED",
+        message: `Direct fallback failed; kept the AST translation. ${failureMessage(classifyFailure(err)!, err)}`,
+      });
+    }
   }
 
-  const pythonCode = generatePython(
-    statements,
-    options.includeDiagnostics ? diagnostics : []
+  const codegenDetailed: CodegenDiagnostic[] = [];
+  const pythonCode = generatePython(statements, [], codegenDetailed);
+  diagnostics.push(
+    ...codegenDetailed.map((d) => ({ blockId: block.id, ...d }))
   );
-  return { pythonCode, diagnostics };
+
+  if (!pythonCode && block.text.trim()) {
+    return failedOutcome(
+      block,
+      new LlmResponseError("empty_response", "Model output contained no usable steps."),
+      diagnostics,
+      { droppedNodes: verified.droppedNodes, unknownNodes }
+    );
+  }
+
+  const partial = verified.droppedNodes > 0 || unknownNodes > 0;
+  return {
+    id: block.id,
+    status: partial ? "partial" : "ok",
+    pythonCode,
+    droppedNodes: verified.droppedNodes,
+    unknownNodes,
+    diagnostics,
+  };
 }
 
 /**

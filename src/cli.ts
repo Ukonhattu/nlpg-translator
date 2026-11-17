@@ -174,6 +174,7 @@ async function main() {
     reasoningEffort,
     includeDiagnostics,
     strictOutputFidelity,
+    throwOnFailure: true,
   });
 
   if (result.errors.length > 0) {

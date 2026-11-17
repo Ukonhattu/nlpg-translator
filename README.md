@@ -143,6 +143,18 @@ The HTTP server is meant for **internal deployment behind authentication**, not 
 
 The library and CLI still accept `endpoint`/`model` overrides, because there the caller owns the API key. `timeoutMs` is available in `TranslateOptions`.
 
+## Result status and diagnostics
+
+`translateProgram` returns, besides `pythonCode` and `errors`:
+
+| Field | Description |
+|-------|-------------|
+| `status` | Worst block status: `"ok"`, `"partial"` (some nodes dropped or `unknown`) or `"failed"` (no usable code) |
+| `blocks[]` | Per block: `id`, `status`, `pythonCode`, `droppedNodes`, `unknownNodes`, and `failureReason` (`parse_error`, `incomplete_response`, `empty_response`, `http_error`, `timeout`) when failed |
+| `diagnostics` / `diagnosticsDetailed` | Only with `includeDiagnostics: true`. Detailed entries are `{ blockId, line?, severity, code, message }` |
+
+A failed block contributes `# [block <id>: translation failed]` to `pythonCode` (`failedBlockMarker: false` disables it). Failures do not throw unless `throwOnFailure: true` and every block failed; the CLI and HTTP server set it so total failures stay errors (the server maps them to 502/504). See `CHANGELOG.md` for behaviour changes.
+
 ## Library
 
 Same options as the HTTP API (`llmApi`, `endpoint`, `model`, `astMode`, …). Keys can be passed explicitly or read from the environment by `resolveLlmConfig`.

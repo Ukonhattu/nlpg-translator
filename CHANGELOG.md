@@ -1,0 +1,38 @@
+# Changelog
+
+## Unreleased
+
+### Behaviour changes
+
+- **LLM failures no longer throw by default (Phase 3).** `translateProgram` now
+  reports an HTTP error, timeout, unparseable, incomplete or empty model
+  response as a *failed block* (`status: "failed"`, `blocks[].failureReason`)
+  instead of rejecting. Set `throwOnFailure: true` to get the old behaviour when
+  every block fails (the original error is rethrown). Configuration errors
+  (e.g. a missing API key) still throw.
+- **Failed blocks leave a marker.** `pythonCode` contains
+  `# [block <id>: translation failed]` for a failed block instead of silently
+  omitting it. Disable with `failedBlockMarker: false`.
+- **`extractResponseText` no longer returns a JSON dump.** It concatenates all
+  `output_text` parts of all messages, and throws `LlmResponseError`
+  (`incomplete_response` / `empty_response`) when there is no usable text or the
+  response is `incomplete`.
+- **Diagnostics are always collected internally.** `includeDiagnostics` only
+  controls whether they are returned. `verifyProgram` / `verifyStatements`
+  ignore `collectDiagnostics` (kept for compatibility).
+- **Identifiers keep their case** (Phase 2): `Score` and `score` are different
+  variables; Python keywords get a `_` suffix; non-identifier method, function,
+  exception and parameter names make the step invalid (dropped with a
+  diagnostic).
+- **Operator parentheses are minimal** (Phase 2): `(a + b) + c` is emitted as
+  `a + b + c`.
+- **HTTP server (Phase 1):** request-supplied `endpoint`, `model` and `llmApi`
+  are ignored; `HOST` defaults to `127.0.0.1` and a non-loopback `HOST`
+  requires `SERVER_AUTH_TOKEN`.
+
+### Additions
+
+- `TranslationResult.blocks`, `status`, `diagnosticsDetailed` (structured
+  diagnostics with `blockId`, `line`, `severity`, `code`, `message`).
+- `TranslateOptions.throwOnFailure`, `failedBlockMarker`, `timeoutMs`.
+- Verification limits: statement nesting depth 32, expression depth 64.

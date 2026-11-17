@@ -155,17 +155,51 @@ const BINOPS = new Set(["+", "-", "*", "/", "%"]);
 const AUG_OPS = new Set(["+", "-", "*", "/"]);
 const CAST_TYPES = new Set(["int", "float", "str"]);
 
+export type VerifyDiagnostic = {
+  line?: number;
+  severity: "info" | "warning" | "error";
+  code: string;
+  message: string;
+};
+
 export type VerifyOptions = {
   /** When true, drop print nodes not grounded in output verbs on the cited line. */
   strictOutputFidelity?: boolean;
-  /** When true, record messages in diagnostics (default false). */
+  /**
+   * @deprecated Diagnostics are always collected; the translator decides whether
+   * to return them (`includeDiagnostics`). Kept so existing callers compile.
+   */
   collectDiagnostics?: boolean;
+  /** Internal: receives structured diagnostics alongside the string list. */
+  detailed?: VerifyDiagnostic[];
+  /** Internal: counts nodes dropped during verification. */
+  stats?: { dropped: number };
 };
 
 export type VerifyResult = {
   statements: Stmt[];
+  /** Human-readable messages (always collected). */
   diagnostics: string[];
+  diagnosticsDetailed: VerifyDiagnostic[];
+  /** Number of nodes dropped as invalid / ungrounded / too deep. */
+  droppedNodes: number;
 };
+
+/** Maximum statement nesting depth; deeper subtrees are dropped. */
+export const MAX_AST_DEPTH = 32;
+/** Maximum expression nesting depth. */
+const MAX_EXPR_DEPTH = 64;
+
+function report(
+  diagnostics: string[],
+  options: VerifyOptions,
+  d: Omit<VerifyDiagnostic, "severity"> & { severity?: VerifyDiagnostic["severity"] },
+  dropped = false
+): void {
+  diagnostics.push(d.message);
+  options.detailed?.push({ severity: "warning", ...d });
+  if (dropped && options.stats) options.stats.dropped++;
+}
 
 function isFstringPart(part: any): part is FStringPart {
   if (!part || typeof part !== "object") return false;
@@ -174,10 +208,22 @@ function isFstringPart(part: any): part is FStringPart {
   return false;
 }
 
+let exprDepth = 0;
+
 function isExpr(node: any): node is Expr {
   if (!node || typeof node !== "object" || !EXPR_KINDS.has(node.kind)) {
     return false;
   }
+  if (exprDepth >= MAX_EXPR_DEPTH) return false;
+  exprDepth++;
+  try {
+    return isExprShape(node);
+  } finally {
+    exprDepth--;
+  }
+}
+
+function isExprShape(node: any): boolean {
   switch (node.kind) {
     case "num":
       if (typeof node.raw !== "string") delete node.raw;
@@ -420,7 +466,8 @@ function verifyStmtBodies(
   sourceLines: string[],
   diagnostics: string[],
   where: string,
-  options: VerifyOptions
+  options: VerifyOptions,
+  depth: number
 ): void {
   switch (node.kind) {
     case "if":
@@ -429,7 +476,8 @@ function verifyStmtBodies(
         sourceLines,
         diagnostics,
         `${where}.body`,
-        options
+        options,
+        depth + 1
       );
       if (Array.isArray(node.elifs)) {
         node.elifs.forEach((clause: ElifClause, i: number) => {
@@ -438,7 +486,8 @@ function verifyStmtBodies(
             sourceLines,
             diagnostics,
             `${where}.elifs[${i}].body`,
-            options
+            options,
+            depth + 1
           );
         });
       }
@@ -447,7 +496,8 @@ function verifyStmtBodies(
         sourceLines,
         diagnostics,
         `${where}.orelse`,
-        options
+        options,
+        depth + 1
       );
       break;
     case "while":
@@ -459,7 +509,8 @@ function verifyStmtBodies(
         sourceLines,
         diagnostics,
         `${where}.body`,
-        options
+        options,
+        depth + 1
       );
       break;
     case "functiondef":
@@ -468,7 +519,8 @@ function verifyStmtBodies(
         sourceLines,
         diagnostics,
         `${where}.body`,
-        options
+        options,
+        depth + 1
       );
       break;
     case "try":
@@ -477,7 +529,8 @@ function verifyStmtBodies(
         sourceLines,
         diagnostics,
         `${where}.body`,
-        options
+        options,
+        depth + 1
       );
       node.handlers.forEach((handler: ExceptHandler, i: number) => {
         handler.body = verifyStatements(
@@ -485,7 +538,8 @@ function verifyStmtBodies(
           sourceLines,
           diagnostics,
           `${where}.handlers[${i}].body`,
-          options
+          options,
+          depth + 1
         );
       });
       break;
@@ -493,25 +547,50 @@ function verifyStmtBodies(
 }
 
 export function verifyStatements(
-  nodes: any[],
+  nodes: any,
   sourceLines: string[],
   diagnostics: string[],
   path = "program",
-  options: VerifyOptions = {}
+  options: VerifyOptions = {},
+  depth = 0
 ): Stmt[] {
   const result: Stmt[] = [];
-  const note = (message: string) => {
-    if (options.collectDiagnostics) diagnostics.push(message);
-  };
+  const say = (
+    code: string,
+    message: string,
+    line?: number,
+    severity: VerifyDiagnostic["severity"] = "warning",
+    dropped = false
+  ) => report(diagnostics, options, { code, message, line, severity }, dropped);
+
+  if (!Array.isArray(nodes)) {
+    say("BODY_NOT_ARRAY", `Expected a list of steps at ${path}; treated as empty.`);
+    return result;
+  }
+  if (depth > MAX_AST_DEPTH) {
+    say(
+      "DEPTH_LIMIT",
+      `Dropped ${nodes.length} step(s) at ${path}: nesting is deeper than ${MAX_AST_DEPTH}.`,
+      undefined,
+      "warning"
+    );
+    if (options.stats) options.stats.dropped += nodes.length;
+    return result;
+  }
 
   const recoveredHeaders = new Set<any>();
 
   nodes.forEach((node, index) => {
     const where = `${path}[${index}]`;
 
+    if (!node || typeof node !== "object" || Array.isArray(node)) {
+      say("INVALID_STEP", `Skipped invalid step at ${where} (not an object).`, undefined, "warning", true);
+      return;
+    }
+
     if (node.kind === "unknown") {
       const recovered = tryRecoverUnknownFromSource(
-        sourceLines[(node.line ?? 1) - 1] ?? ""
+        sourceLines[(Number.isInteger(node.line) ? node.line : 1) - 1] ?? ""
       );
       if (recovered) {
         node = { ...recovered, line: node.line };
@@ -520,42 +599,64 @@ export function verifyStatements(
     }
 
     if (!validateStmtShape(node)) {
-      note(`Skipped invalid step at ${where} (kind: ${node?.kind ?? "unknown"}).`);
+      say(
+        "INVALID_STEP",
+        `Skipped invalid step at ${where} (kind: ${node?.kind ?? "unknown"}).`,
+        Number.isInteger(node?.line) ? node.line : undefined,
+        "warning",
+        true
+      );
       return;
     }
 
     if (node.line > sourceLines.length) {
-      note(
-        `Skipped '${node.kind}' at ${where}: line ${node.line} is outside the input (${sourceLines.length} lines).`
+      say(
+        "LINE_OUT_OF_RANGE",
+        `Skipped '${node.kind}' at ${where}: line ${node.line} is outside the input (${sourceLines.length} lines).`,
+        node.line,
+        "warning",
+        true
       );
       return;
     }
     node.source = sourceLines[node.line - 1];
 
     if (node.kind === "pass" && node.source.trim().toLowerCase() !== "pass") {
-      note(
-        `Skipped 'pass' at ${where}: line ${node.line} is not a pass placeholder (got: ${JSON.stringify(node.source.trim())}).`
+      say(
+        "PASS_NOT_PLACEHOLDER",
+        `Skipped 'pass' at ${where}: line ${node.line} is not a pass placeholder (got: ${JSON.stringify(node.source.trim())}).`,
+        node.line,
+        "warning",
+        true
       );
       return;
     }
 
     if (node.kind === "print" && !lineRequestsOutput(node.source)) {
       if (options.strictOutputFidelity) {
-        note(
-          `Line ${node.line}: omitted print (source line does not request output).`
+        say(
+          "PRINT_OMITTED",
+          `Line ${node.line}: omitted print (source line does not request output).`,
+          node.line,
+          "warning",
+          true
         );
         return;
       }
-      note(
-        `Line ${node.line}: print may not match source (no output verb on that line).`
+      say(
+        "PRINT_UNGROUNDED",
+        `Line ${node.line}: print may not match source (no output verb on that line).`,
+        node.line
       );
     }
 
-    verifyStmtBodies(node, sourceLines, diagnostics, where, options);
+    verifyStmtBodies(node, sourceLines, diagnostics, where, options, depth);
     result.push(node as Stmt);
   });
 
-  return reparentRecoveredLoopBodies(result, recoveredHeaders, note);
+  return reparentRecoveredLoopBodies(result, recoveredHeaders, (message, line) =>
+    say("RECOVERED_LOOP_BODY", message, line, "info")
+  );
 }
 
 const LOOP_KINDS = new Set(["for", "forin", "while", "repeat"]);
@@ -573,7 +674,7 @@ function indentWidth(line: string): number {
 function reparentRecoveredLoopBodies(
   statements: Stmt[],
   recovered: Set<any>,
-  note: (message: string) => void
+  note: (message: string, line?: number) => void
 ): Stmt[] {
   if (recovered.size === 0) return statements;
   const out: Stmt[] = [];
@@ -595,7 +696,8 @@ function reparentRecoveredLoopBodies(
       i = j - 1;
     } else {
       note(
-        `Recovered loop header at line ${stmt.line}; body could not be determined.`
+        `Recovered loop header at line ${stmt.line}; body could not be determined.`,
+        stmt.line
       );
     }
   }
@@ -608,22 +710,20 @@ export function verifyProgram(
   options: VerifyOptions = {}
 ): VerifyResult {
   const diagnostics: string[] = [];
-  const note = (message: string) => {
-    if (options.collectDiagnostics) diagnostics.push(message);
-  };
+  const diagnosticsDetailed: VerifyDiagnostic[] = [];
+  const stats = { dropped: 0 };
+  const opts: VerifyOptions = { ...options, detailed: diagnosticsDetailed, stats };
   if (!raw || typeof raw !== "object" || !Array.isArray(raw.statements)) {
-    note("Model did not return a valid program object.");
-    return { statements: [], diagnostics };
+    report(diagnostics, opts, {
+      code: "INVALID_PROGRAM",
+      message: "Model did not return a valid program object.",
+      severity: "error",
+    });
+    return { statements: [], diagnostics, diagnosticsDetailed, droppedNodes: 0 };
   }
   const sourceLines = sourceText.split(/\r?\n/);
   const statements = promoteOrphanPassIntoLoopBodies(
-    verifyStatements(
-      raw.statements,
-      sourceLines,
-      diagnostics,
-      "program",
-      options
-    )
+    verifyStatements(raw.statements, sourceLines, diagnostics, "program", opts)
   );
-  return { statements, diagnostics };
+  return { statements, diagnostics, diagnosticsDetailed, droppedNodes: stats.dropped };
 }
