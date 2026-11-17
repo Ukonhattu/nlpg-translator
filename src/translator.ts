@@ -1,4 +1,3 @@
-import fetch from "node-fetch";
 import type { Block, TranslateOptions } from "./index.js";
 import { resolveLlmConfig, type ResolvedLlmConfig } from "./llmConfig.js";
 import {

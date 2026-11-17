@@ -7,9 +7,7 @@ import {
 
 const mockFetch = vi.fn();
 
-vi.mock("node-fetch", () => ({
-  default: (...args: unknown[]) => mockFetch(...args),
-}));
+vi.stubGlobal("fetch", (...args: unknown[]) => mockFetch(...args));
 
 describe("extractResponseText", () => {
   it("reads output_text from a Responses API message", () => {

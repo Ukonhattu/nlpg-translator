@@ -1,4 +1,5 @@
 import { expect } from "vitest";
+import { assertParses } from "../helpers/python.js";
 import type { TranslateOptions } from "../../src/index.js";
 
 export const hasApiKey = Boolean(process.env.AALTO_API_KEY?.trim());
@@ -46,6 +47,7 @@ export function gatewayIntegrationOptions(
 export function expectCleanPython(code: string): void {
   expect(code.trim().length).toBeGreaterThan(0);
   expect(code).not.toMatch(/```/);
+  assertParses(code);
 }
 
 export function expectPatterns(

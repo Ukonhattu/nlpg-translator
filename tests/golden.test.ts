@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { verifyProgram } from "../src/ast.js";
 import { generatePython } from "../src/codegen.js";
+import { assertParses } from "./helpers/python.js";
 import { loadGolden } from "./fixtures/loadGolden.js";
 
 const goldenNames = ["combined-course-features", "lists-loops"] as const;
@@ -14,6 +15,7 @@ describe.each(goldenNames)("golden fixture %s", (name) => {
     expect(statements.length).toBe(fixture.raw.statements.length);
 
     const code = generatePython(statements);
+    assertParses(code);
     for (const pattern of fixture.pythonPatterns) {
       expect(code).toMatch(new RegExp(pattern, "m"));
     }
