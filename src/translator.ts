@@ -74,14 +74,21 @@ async function callLlm(
   reasoningEffort?: TranslateOptions["reasoningEffort"]
 ): Promise<string> {
   const config = resolveLlmConfig(options);
-  return callResponses(systemPrompt, userContent, config, reasoningEffort);
+  return callResponses(
+    systemPrompt,
+    userContent,
+    config,
+    reasoningEffort,
+    options.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS
+  );
 }
 
 async function callResponses(
   systemPrompt: string,
   userContent: string,
   config: ResolvedLlmConfig,
-  reasoningEffort?: TranslateOptions["reasoningEffort"]
+  reasoningEffort: TranslateOptions["reasoningEffort"] | undefined,
+  timeoutMs: number
 ): Promise<string> {
   const body: Record<string, unknown> = {
     model: config.model,
@@ -95,13 +102,27 @@ async function callResponses(
     body.reasoning = { effort: reasoningEffort };
   }
 
-  const data = await postLlm(config, body);
+  const data = await postLlm(config, body, timeoutMs);
   return extractResponseText(data);
+}
+
+export const DEFAULT_LLM_TIMEOUT_MS = 60_000;
+
+/** The upstream LLM endpoint answered with a non-2xx status. */
+export class LlmHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: string
+  ) {
+    super(`LLM request failed (${status}): ${body}`);
+    this.name = "LlmHttpError";
+  }
 }
 
 async function postLlm(
   config: ResolvedLlmConfig,
-  body: Record<string, unknown> | object
+  body: Record<string, unknown> | object,
+  timeoutMs: number
 ): Promise<any> {
   const res = await fetch(config.endpoint, {
     method: "POST",
@@ -110,11 +131,11 @@ async function postLlm(
       ...config.authHeaders,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`LLM request failed (${res.status}): ${text}`);
+    throw new LlmHttpError(res.status, await res.text());
   }
 
   return res.json();
