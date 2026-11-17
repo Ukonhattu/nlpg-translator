@@ -1,3 +1,4 @@
+import { toPythonIdentifier } from "./identifiers.js";
 import type { Block, LintError } from "./index.js";
 
 const ambiguousWords = ["big", "small", "huge", "many", "few"];
@@ -44,8 +45,9 @@ function extractUsedVariables(line: string): string[] {
   return vars;
 }
 
+// The linter matches names case-insensitively, so it lowercases the shared policy's output.
 function slugToVar(name: string): string {
-  return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  return toPythonIdentifier(name, "var").toLowerCase();
 }
 
 function isAllowedCondition(line: string): boolean {

@@ -1,7 +1,6 @@
 /**
  * Property test (FIX_PLAN Phase 0.2): generatePython must always emit parseable
- * Python for any structurally valid AST. Expected to fail until Phase 2 lands;
- * then change `it.fails` to `it`.
+ * Python for any structurally valid AST.
  */
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
@@ -20,6 +19,7 @@ const nastyStrings = fc.oneof(
 const expr: fc.Memo<Expr> = fc.memo((d) => {
   const leaf = fc.oneof(
     fc.integer({ min: -50, max: 50 }).map((value): Expr => ({ kind: "num", value })),
+    fc.constantFrom("10.0", "-2.50", "1e3", "007.5").map((raw): Expr => ({ kind: "num", value: Number(raw), raw })),
     nastyStrings.map((value): Expr => ({ kind: "str", value })),
     fc.boolean().map((value): Expr => ({ kind: "bool", value })),
     idents.map((name): Expr => ({ kind: "var", name }))
@@ -41,6 +41,18 @@ const expr: fc.Memo<Expr> = fc.memo((d) => {
       right: sub,
     }) as fc.Arbitrary<Expr>,
     sub.map((value): Expr => ({ kind: "not", value })),
+    fc.record({
+      kind: fc.constant("boolop" as const),
+      op: fc.constantFrom("and", "or" as const),
+      values: fc.array(sub, { minLength: 2, maxLength: 3 }),
+    }) as fc.Arbitrary<Expr>,
+    fc.record({ kind: fc.constant("contains" as const), left: sub, right: sub }),
+    fc.record({
+      kind: fc.constant("cast" as const),
+      type: fc.constantFrom("int", "float", "str" as const),
+      value: sub,
+    }) as fc.Arbitrary<Expr>,
+    fc.array(sub, { maxLength: 3 }).map((items): Expr => ({ kind: "list", items })),
     fc.record({ kind: fc.constant("index" as const), target: sub, index: sub }),
     fc.record({
       kind: fc.constant("fstring" as const),
@@ -90,17 +102,17 @@ const stmt: fc.Memo<Stmt> = fc.memo((d) => {
   );
 });
 
-const maybeFails = hasPython ? it.fails : it.skip;
+const maybeIt = hasPython ? it : it.skip;
 
 describe("codegen property test", () => {
-  maybeFails("generatePython always emits parseable Python", () => {
+  maybeIt("generatePython always emits parseable Python", () => {
     fc.assert(
       fc.property(fc.array(stmt(3), { minLength: 1, maxLength: 4 }), (stmts) => {
         const code = generatePython(stmts);
         assertParses(code);
         expect(code.length).toBeGreaterThan(0);
       }),
-      { numRuns: 50 }
+      { numRuns: 300 }
     );
   });
 });

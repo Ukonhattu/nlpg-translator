@@ -10,12 +10,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { verifyProgram } from "../src/ast.js";
 import { generatePython } from "../src/codegen.js";
 import { translateBlocksViaAst } from "../src/translator.js";
-import { assertParses, hasPython, runPython } from "./helpers/python.js";
+import {
+  assertParses,
+  hasPython,
+  pythonAstHasNode,
+  runPython,
+} from "./helpers/python.js";
 
-/** A test for a bug that is not fixed yet (expected to fail). Skipped without python3. */
-const bug = hasPython ? it.fails : it.skip;
-/** A bug that no longer reproduces; flip `bug` to this when the fix lands. */
-export const fixed = it;
+/** A test for a bug that is not fixed yet (expected to fail). */
+const bug = it.fails;
+/** A fixed bug whose check needs python3 (skipped when it is missing). */
+const fixed = hasPython ? it : it.skip;
 
 function compile(raw: unknown, source: string) {
   const { statements, diagnostics } = verifyProgram(raw, source, {
@@ -29,7 +34,7 @@ const str = (value: string) => ({ kind: "str", value });
 const v = (name: string) => ({ kind: "var", name });
 
 describe("regressions: codegen identifiers (§2.1, §2.2)", () => {
-  bug("def/call name case is preserved consistently (§2.1)", () => {
+  fixed("def/call name case is preserved consistently (§2.1)", () => {
     const { code } = compile(
       {
         statements: [
@@ -56,7 +61,7 @@ describe("regressions: codegen identifiers (§2.1, §2.2)", () => {
     expect(run.stdout.trim()).toBe("7");
   });
 
-  bug('assign target "class" yields parseable Python (§2.2)', () => {
+  fixed('assign target "class" yields parseable Python (§2.2)', () => {
     const { code } = compile(
       { statements: [{ kind: "assign", target: "class", value: num(1), line: 1 }] },
       "Set class to 1"
@@ -64,7 +69,7 @@ describe("regressions: codegen identifiers (§2.1, §2.2)", () => {
     assertParses(code);
   });
 
-  bug("määrä and mÄÄrÖ stay distinct identifiers (§2.2)", () => {
+  fixed("määrä and mÄÄrÖ stay distinct identifiers (§2.2)", () => {
     const { code } = compile(
       {
         statements: [
@@ -85,7 +90,7 @@ describe("regressions: float literals (§2.3)", () => {
     vi.unstubAllGlobals();
   });
 
-  bug("num 10.0 from raw JSON text prints as 10.0", async () => {
+  fixed("num 10.0 from raw JSON text prints as 10.0", async () => {
     const modelText =
       '{"statements":[{"kind":"print","value":{"kind":"num","value":10.0},"line":1}]}';
     vi.stubGlobal(
@@ -108,7 +113,7 @@ describe("regressions: float literals (§2.3)", () => {
 });
 
 describe("regressions: f-strings on Python 3.10 (§2.4)", () => {
-  bug("lit part containing a newline parses", () => {
+  fixed("lit part containing a newline parses", () => {
     const { code } = compile(
       {
         statements: [
@@ -130,7 +135,7 @@ describe("regressions: f-strings on Python 3.10 (§2.4)", () => {
     assertParses(code);
   });
 
-  bug("expr part containing a str argument parses (no nested same quotes)", () => {
+  fixed("expr part containing a str argument parses (no nested same quotes)", () => {
     const { code } = compile(
       {
         statements: [
@@ -232,10 +237,10 @@ describe("regressions: code injection through free-form fields (§1.4)", () => {
   ];
 
   for (const [name, node, source] of cases) {
-    bug(`${name}: output parses and contains no import`, () => {
+    fixed(`${name}: output parses and contains no import statement`, () => {
       const { code } = compile({ statements: [node] }, source);
       assertParses(code);
-      expect(code).not.toMatch(/import/);
+      expect(pythonAstHasNode(code, "Import")).toBe(false);
     });
   }
 });

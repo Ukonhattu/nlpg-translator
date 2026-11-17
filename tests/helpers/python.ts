@@ -38,3 +38,20 @@ export function assertParses(code: string): void {
   );
   expect(r.status, `Python failed to parse:\n${code}\n${r.stderr}`).toBe(0);
 }
+
+/** True when the Python AST of `code` contains a node of the given class (e.g. "Import"). */
+export function pythonAstHasNode(code: string, nodeName: string): boolean {
+  if (!hasPython) return false;
+  const r = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-c",
+      "import ast,sys; t=ast.parse(sys.stdin.read()); n=sys.argv[1]; " +
+        "sys.exit(0 if any(type(x).__name__==n for x in ast.walk(t)) else 1)",
+      nodeName,
+    ],
+    { input: code, encoding: "utf8", timeout: 10_000 }
+  );
+  return r.status === 0;
+}

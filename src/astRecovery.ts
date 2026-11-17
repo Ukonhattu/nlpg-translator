@@ -1,9 +1,10 @@
 import type { Expr, Stmt } from "./ast.js";
+import { toPythonIdentifier } from "./identifiers.js";
 
 const LOOP_STMT_KINDS = new Set(["forin", "for", "while", "repeat"]);
 
 function slugToVar(name: string): string {
-  return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  return toPythonIdentifier(name, "var");
 }
 
 function varExpr(name: string): Expr {

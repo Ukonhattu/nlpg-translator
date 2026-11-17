@@ -328,7 +328,8 @@ Statement nodes:
 - unknown: { "kind":"unknown", "line": n, "note"?: string }
 
 Expression nodes:
-- num, str, bool, var
+- num: { "kind":"num", "value": n, "raw"?: string }  // when the number is written with a decimal point (e.g. 10.0), set "raw" to the literal exactly as written
+- str, bool, var
 - binop: + - * / %
 - compare: > < >= <= == !=
 - boolop: and | or (values: Expr[])
@@ -429,7 +430,11 @@ async function translateSingleBlockViaAst(
     };
   }
 
-  return { pythonCode: generatePython(statements), diagnostics };
+  const pythonCode = generatePython(
+    statements,
+    options.includeDiagnostics ? diagnostics : []
+  );
+  return { pythonCode, diagnostics };
 }
 
 /**
@@ -439,13 +444,34 @@ async function translateSingleBlockViaAst(
 function parseJsonObject(text: string): any {
   const cleaned = stripCodeFences(text);
   try {
-    return JSON.parse(cleaned);
+    return parseJsonKeepingNumberText(cleaned);
   } catch {
     const start = cleaned.indexOf("{");
     const end = cleaned.lastIndexOf("}");
     if (start === -1 || end === -1 || end <= start) {
       throw new Error("no JSON object found in response");
     }
-    return JSON.parse(cleaned.slice(start, end + 1));
+    return parseJsonKeepingNumberText(cleaned.slice(start, end + 1));
   }
+}
+
+/**
+ * JSON.parse collapses `10.0` to the number 10. Use the reviver's source-text
+ * access (Node >= 21) to keep the literal as `raw` on `num` nodes, unless the
+ * model already supplied one.
+ */
+function parseJsonKeepingNumberText(text: string): any {
+  return JSON.parse(text, function (this: any, key: string, value: unknown, context?: { source?: string }) {
+    if (
+      key === "value" &&
+      typeof value === "number" &&
+      this?.kind === "num" &&
+      this.raw === undefined &&
+      typeof context?.source === "string" &&
+      context.source !== String(value)
+    ) {
+      this.raw = context.source;
+    }
+    return value;
+  } as any);
 }

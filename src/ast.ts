@@ -2,6 +2,7 @@ import {
   promoteOrphanPassIntoLoopBodies,
   tryRecoverUnknownFromSource,
 } from "./astRecovery.js";
+import { isValidNormalizedIdentifier } from "./identifiers.js";
 import { lineRequestsOutput } from "./outputVerbs.js";
 
 /**
@@ -14,7 +15,7 @@ export type FStringPart =
   | { kind: "expr"; value: Expr };
 
 export type Expr =
-  | { kind: "num"; value: number }
+  | { kind: "num"; value: number; raw?: string }
   | { kind: "str"; value: string }
   | { kind: "bool"; value: boolean }
   | { kind: "var"; name: string }
@@ -179,6 +180,7 @@ function isExpr(node: any): node is Expr {
   }
   switch (node.kind) {
     case "num":
+      if (typeof node.raw !== "string") delete node.raw;
       return typeof node.value === "number" && Number.isFinite(node.value);
     case "str":
       return typeof node.value === "string";
@@ -216,15 +218,13 @@ function isExpr(node: any): node is Expr {
       return Array.isArray(node.items) && node.items.every(isExpr);
     case "call":
       return (
-        typeof node.func === "string" &&
-        node.func.trim().length > 0 &&
+        isValidNormalizedIdentifier(node.func) &&
         Array.isArray(node.args) &&
         node.args.every(isExpr)
       );
     case "methodcall":
       return (
-        typeof node.method === "string" &&
-        node.method.trim().length > 0 &&
+        isValidNormalizedIdentifier(node.method) &&
         isExpr(node.target) &&
         Array.isArray(node.args) &&
         node.args.every(isExpr)
@@ -242,10 +242,18 @@ function isExpr(node: any): node is Expr {
   }
 }
 
+/** A subscript target such as `items[0]` (or a bare variable). */
+function isAssignableExpr(node: any): boolean {
+  if (!isExpr(node)) return false;
+  if (node.kind === "var") return true;
+  return node.kind === "index" && isAssignableExpr(node.target);
+}
+
 function isAssignTargetValid(node: any): boolean {
   const hasName =
     typeof node.target === "string" && node.target.trim().length > 0;
-  const hasExpr = node.targetExpr !== undefined && isExpr(node.targetExpr);
+  const hasExpr =
+    node.targetExpr !== undefined && isAssignableExpr(node.targetExpr);
   return hasName !== hasExpr;
 }
 
@@ -262,7 +270,9 @@ function isExceptHandler(handler: any): handler is ExceptHandler {
   return (
     handler &&
     typeof handler === "object" &&
-    (handler.exc === undefined || typeof handler.exc === "string") &&
+    (handler.exc === undefined ||
+      handler.exc === "" ||
+      isValidNormalizedIdentifier(handler.exc)) &&
     Array.isArray(handler.body)
   );
 }
@@ -335,9 +345,7 @@ function validateStmtShape(node: any): boolean {
         typeof node.name === "string" &&
         node.name.trim().length > 0 &&
         Array.isArray(node.params) &&
-        node.params.every(
-          (p: unknown) => typeof p === "string" && (p as string).trim().length > 0
-        ) &&
+        node.params.every(isValidNormalizedIdentifier) &&
         (node.docstring === undefined || typeof node.docstring === "string") &&
         Array.isArray(node.body)
       );
@@ -350,8 +358,7 @@ function validateStmtShape(node: any): boolean {
       );
     case "raise":
       return (
-        typeof node.excType === "string" &&
-        node.excType.trim().length > 0 &&
+        isValidNormalizedIdentifier(node.excType) &&
         (node.message === undefined || isExpr(node.message))
       );
     case "try":
@@ -497,6 +504,8 @@ export function verifyStatements(
     if (options.collectDiagnostics) diagnostics.push(message);
   };
 
+  const recoveredHeaders = new Set<any>();
+
   nodes.forEach((node, index) => {
     const where = `${path}[${index}]`;
 
@@ -506,6 +515,7 @@ export function verifyStatements(
       );
       if (recovered) {
         node = { ...recovered, line: node.line };
+        if (LOOP_KINDS.has(node.kind)) recoveredHeaders.add(node);
       }
     }
 
@@ -545,7 +555,51 @@ export function verifyStatements(
     result.push(node as Stmt);
   });
 
-  return result;
+  return reparentRecoveredLoopBodies(result, recoveredHeaders, note);
+}
+
+const LOOP_KINDS = new Set(["for", "forin", "while", "repeat"]);
+
+function indentWidth(line: string): number {
+  const lead = /^[ \t]*/.exec(line)![0];
+  return lead.replace(/\t/g, "    ").length;
+}
+
+/**
+ * A loop header recovered from source text has an empty body. Move the
+ * following sibling statements that are indented deeper than the header
+ * (according to the original text) into that body.
+ */
+function reparentRecoveredLoopBodies(
+  statements: Stmt[],
+  recovered: Set<any>,
+  note: (message: string) => void
+): Stmt[] {
+  if (recovered.size === 0) return statements;
+  const out: Stmt[] = [];
+  for (let i = 0; i < statements.length; i++) {
+    const stmt = statements[i] as any;
+    out.push(stmt);
+    if (!recovered.has(stmt) || (stmt.body?.length ?? 0) > 0) continue;
+    const headerIndent = indentWidth(stmt.source ?? "");
+    let j = i + 1;
+    while (
+      j < statements.length &&
+      statements[j].kind !== "unknown" &&
+      indentWidth((statements[j] as any).source ?? "") > headerIndent
+    ) {
+      j++;
+    }
+    if (j > i + 1) {
+      stmt.body = statements.slice(i + 1, j);
+      i = j - 1;
+    } else {
+      note(
+        `Recovered loop header at line ${stmt.line}; body could not be determined.`
+      );
+    }
+  }
+  return out;
 }
 
 export function verifyProgram(
